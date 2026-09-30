@@ -1,0 +1,31 @@
+{
+  "name": "tron-multisig",
+  "private": true,
+  "version": "0.1.0",
+  "description": "SSP TRON multisig vaults: contracts (tron-solc) and integration tests against a real java-tron node. The npm package lives in sdk/.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "compile": "node scripts/compile.mjs",
+    "node:start": "./node/start-node.sh",
+    "node:stop": "./node/stop-node.sh",
+    "node:wait": "node scripts/wait-node.mjs",
+    "chain:align": "node scripts/align-chain.mjs",
+    "test": "vitest run --config vitest.config.mjs",
+    "format": "prettier --write \"**/*.{mjs,js,json,md}\"",
+    "format:check": "prettier --check \"**/*.{mjs,js,json,md}\""
+  },
+  "dependencies": {
+    "@openzeppelin/tron-contracts": "5.6.0"
+  },
+  "devDependencies": {
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
+    "ethers": "6.17.0",
+    "prettier": "3.9.9",
+    "solc": "0.8.31",
+    "tronweb": "6.5.1",
+    "vite": "8.3.0",
+    "vitest": "5.0.1"
+  }
+}
