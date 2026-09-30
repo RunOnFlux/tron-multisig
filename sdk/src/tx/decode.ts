@@ -1,5 +1,10 @@
 import type { TronAddress } from '../address.js';
-import { decodeExecute, SELECTORS, type ExecuteArgs } from '../abi.js';
+import {
+  decodeExecute,
+  decodeSponsorExecute,
+  SELECTORS,
+  type ExecuteArgs,
+} from '../abi.js';
 import { bytesToHex, hexToBytes, to0x } from '../bytes.js';
 import { invalidTransaction } from '../errors.js';
 import { recoverSigner } from '../sign.js';
@@ -79,14 +84,26 @@ export function recoverTransactionSigners(
 /**
  * If the transaction is a `TriggerSmartContract` whose calldata is an
  * `execute(...)` call (vault or sponsor), return the strictly decoded
- * arguments; otherwise `null`.
+ * arguments; otherwise `null`. An `execute` call that carries TRX or TRC-10
+ * (`call_value`, `call_token_value`, `token_id`) is refused: `execute` is
+ * never paid, and a vault clone does not reject attached TRC-10 (the
+ * DELEGATECALL drops it), so it would silently move the submitter's tokens.
+ * The caller must still check `contractAddress` and `ownerAddress`.
  */
 export function decodeExecuteTransaction(
   raw: RawTransaction,
 ): ExecuteArgs | null {
   if (raw.contract.type !== 'TriggerSmartContract') return null;
-  const data = raw.contract.parameter.data;
-  if (data.length < 4 || to0x(data.subarray(0, 4)) !== SELECTORS.execute)
+  const p = raw.contract.parameter;
+  const data = p.data;
+  if (data.length < 4) return null;
+  const sel = to0x(data.subarray(0, 4));
+  if (sel !== SELECTORS.execute && sel !== SELECTORS.sponsorExecute)
     return null;
-  return decodeExecute(data);
+  if (p.callValue !== 0n || p.callTokenValue !== 0n || p.tokenId !== 0n) {
+    throw invalidTransaction('an execute call must not carry TRX or TRC-10');
+  }
+  return sel === SELECTORS.execute
+    ? decodeExecute(data)
+    : decodeSponsorExecute(data);
 }

@@ -6,7 +6,7 @@ import {
   MAX_UINT256,
   utf8,
 } from '../../src/bytes.js';
-import type { Call, Fee, Op } from '../../src/op.js';
+import { MAX_TVM_AMOUNT, type Call, type Fee, type Op } from '../../src/op.js';
 import { encodeTrc20Transfer } from '../../src/abi.js';
 import { ZERO_ADDRESS } from '../../src/address.js';
 
@@ -77,7 +77,17 @@ export class Rng {
   }
 
   address(): TronAddress {
-    return addressFromBytes20(this.bytes(20));
+    // Never a TVM system address (1..0xffffffff): value transfers to those are
+    // invalid Ops (validateCall), and a random 20-byte value is one with
+    // negligible probability anyway.
+    const b = this.bytes(20);
+    if (b.subarray(0, 16).every((x) => x === 0)) b[0] = 1;
+    return addressFromBytes20(b);
+  }
+
+  /** Positive TRX / TRC-10 amount (the TVM caps these at int64). */
+  amount(): bigint {
+    return (this.u256pos() % MAX_TVM_AMOUNT) + 1n;
   }
 }
 
@@ -86,7 +96,7 @@ export function randomCall(rng: Rng): Call {
     case 0: // TRX
       return {
         to: rng.address(),
-        value: rng.u256pos(),
+        value: rng.amount(),
         data: new Uint8Array(0),
         tokenId: 0n,
         tokenValue: 0n,
@@ -105,12 +115,12 @@ export function randomCall(rng: Rng): Call {
         value: 0n,
         data: new Uint8Array(0),
         tokenId: rng.u256pos(),
-        tokenValue: rng.u256pos(),
+        tokenValue: rng.amount(),
       };
     default: // arbitrary call
       return {
         to: rng.address(),
-        value: rng.u256(),
+        value: rng.bool() ? 0n : rng.amount(),
         data: rng.bytes(rng.int(200)),
         tokenId: 0n,
         tokenValue: 0n,
@@ -122,9 +132,10 @@ export function randomFee(rng: Rng): Fee {
   if (rng.int(3) === 0) {
     return { token: ZERO_ADDRESS, amount: 0n, recipient: ZERO_ADDRESS };
   }
+  const trx = rng.bool();
   return {
-    token: rng.bool() ? ZERO_ADDRESS : rng.address(),
-    amount: rng.u256pos(),
+    token: trx ? ZERO_ADDRESS : rng.address(),
+    amount: trx ? rng.amount() : rng.u256pos(),
     recipient: rng.address(),
   };
 }

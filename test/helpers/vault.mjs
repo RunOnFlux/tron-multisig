@@ -126,13 +126,14 @@ export const SPONSOR_ABI = [
   'function factory() view returns (address)',
   'function isRelayer(address relayer) view returns (bool)',
   'function setRelayer(address relayer, bool allowed)',
-  `function execute(bytes signers, uint8 threshold, ${OP_T} op, bytes signatures) returns (address vault)`,
+  `function execute(bytes signers, uint8 threshold, ${OP_T} op, bytes signatures, uint256 energyCap) returns (address vault)`,
   'function owner() view returns (address)',
   'function pendingOwner() view returns (address)',
   'function transferOwnership(address newOwner)',
   'function acceptOwnership()',
   'function renounceOwnership()',
   'event RelayerSet(address indexed relayer, bool allowed)',
+  'error BadEnergyCap()',
   'event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner)',
   'event OwnershipTransferred(address indexed previousOwner, address indexed newOwner)',
   'error NotRelayer()',
@@ -433,17 +434,20 @@ export const encodeExecute = (v, op, sigs, { signersPacked, threshold } = {}) =>
     op,
     sigs,
   ]);
+/** Default relayer energy cap for sponsored calls in tests (the relay's own cap is 1.2M). */
+export const DEFAULT_ENERGY_CAP = 1_200_000n;
 export const encodeSponsorExecute = (
   v,
   op,
   sigs,
-  { signersPacked, threshold } = {},
+  { signersPacked, threshold, energyCap } = {},
 ) =>
   sponsorIface.encodeFunctionData('execute', [
     signersPacked ?? v.signersPacked,
     threshold ?? v.threshold,
     op,
     sigs,
+    energyCap ?? DEFAULT_ENERGY_CAP,
   ]);
 export const encodeBundle = (signersPacked, threshold, sigs) =>
   coder.encode(['bytes', 'uint8', 'bytes'], [signersPacked, threshold, sigs]);

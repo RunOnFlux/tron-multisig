@@ -8,11 +8,18 @@ import {
   type NetworkName,
 } from './networks.js';
 import { expectKeys, parseDecimal, parseJsonAddress } from './json.js';
-import { opFromJson, opToJson, type Op, type OpJson } from './op.js';
+import {
+  validateOpForVault,
+  opFromJson,
+  opToJson,
+  type Op,
+  type OpJson,
+} from './op.js';
 import { assembleSignatures } from './sign.js';
 import { opDigest } from './tip712.js';
 import {
   deriveVault,
+  MAX_SIGNERS,
   packSigners,
   validateConfig,
   type VaultConfig,
@@ -100,6 +107,12 @@ export function signedOpFromJson(json: unknown): SignedOp {
     throw invalidInput('threshold must be a number');
   if (!Array.isArray(o.signatures))
     throw invalidInput('signatures must be an array');
+  // Bound the lists before decoding their entries (each one is a base58 or
+  // hex decode): no vault has more than MAX_SIGNERS distinct signers.
+  if (o.signers.length > MAX_SIGNERS)
+    throw invalidInput(`a vault has at most ${MAX_SIGNERS} signers`);
+  if (o.signatures.length > MAX_SIGNERS)
+    throw invalidInput(`at most ${MAX_SIGNERS} signatures (one per signer)`);
   const signers = (o.signers as unknown[]).map((s, i) =>
     parseJsonAddress(s, `signers[${i}]`),
   );
@@ -167,6 +180,7 @@ export function verifySignedOp(
       'the stated vault is not the address derived from signers and threshold',
     );
   }
+  validateOpForVault(signed.op, vault.address);
   const digest = opDigest(net.chainId, vault.address, signed.op);
   const signaturesPacked = assembleSignatures(
     digest,

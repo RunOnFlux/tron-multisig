@@ -28,6 +28,10 @@ import {
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PENALTY = { existing: 49_635, new: 100_635 }; // mainnet USDT transfer-frame penalty (TronGrid receipts)
 const FACTOR = 3.4; // mainnet USDT energy_factor 34000 / 10000
+// the node version the suite ran on: the one node/start-node.sh pins (and sha256-checks)
+const JAVA_TRON_VERSION = /^JAVA_TRON_VERSION=(\S+)/m.exec(
+  fs.readFileSync(path.join(ROOT, 'node/start-node.sh'), 'utf8'),
+)[1];
 const rows = [];
 let balanceOfFrame = 0;
 
@@ -301,8 +305,10 @@ describe('energy snapshot', () => {
       });
     const direct = await exec(v, mk());
     const viaSponsor = await exec(v, mk(), { via: 'sponsor' });
+    // LeanSponsor.execute has the vault's own selector and layout (no energyCap), so it gets the
+    // vault's calldata and forwards it verbatim
     const viaLean = await exec(v, mk(), {
-      via: 'sponsor',
+      via: 'vault',
       contract: lean.base58,
       caller: ACTORS.U,
       feeLimit: 1_000_000_000,
@@ -402,7 +408,7 @@ afterAll(() => {
     : [];
   const snapshot = {
     generatedAt: new Date().toISOString(),
-    node: 'java-tron GreatVoyage-v4.8.2.2 (FullNode-aarch64.jar), single-SR private chain aligned to mainnet parameters',
+    node: `java-tron ${JAVA_TRON_VERSION} (FullNode-aarch64), single-SR private chain aligned to mainnet parameters`,
     chainId: D.chain.chainIdHex,
     energyPriceSun: Number(D.chain.params.getEnergyFee),
     bandwidthPriceSun: Number(D.chain.params.getTransactionFee),

@@ -66,10 +66,14 @@ function calldataFor(
   v,
   op,
   sigs,
-  { via = 'vault', signersPacked, threshold } = {},
+  { via = 'vault', signersPacked, threshold, energyCap } = {},
 ) {
   return via === 'sponsor'
-    ? V.encodeSponsorExecute(v, op, sigs, { signersPacked, threshold })
+    ? V.encodeSponsorExecute(v, op, sigs, {
+        signersPacked,
+        threshold,
+        energyCap,
+      })
     : V.encodeExecute(v, op, sigs, { signersPacked, threshold });
 }
 

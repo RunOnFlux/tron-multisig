@@ -6,8 +6,9 @@ import {ISSPVaultFactory} from "../interfaces/ISSPVaultFactory.sol";
 
 /// TEST ONLY — energy experiment, not a proposal to ship as-is. Same job as SSPSponsor.execute, but:
 ///  - configHash is computed locally instead of an external call to the factory;
-///  - the call to the vault forwards msg.data verbatim (sponsor.execute and vault.execute share the
-///    selector and argument layout), so the Op is never ABI-decoded and re-encoded in memory.
+///  - the call to the vault forwards msg.data verbatim (this execute has the vault's selector and
+///    argument layout), so the Op is never ABI-decoded and re-encoded in memory;
+///  - no energyCap: unlike SSPSponsor it does not bound the energy the vault call may burn.
 /// Used by test/90-energy.test.mjs to size the SSPSponsor wrapper overhead.
 contract LeanSponsor {
     bytes32 private constant CONFIG_TAG = keccak256("SSP_TRON_VAULT_CONFIG_V1");

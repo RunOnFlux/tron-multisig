@@ -101,21 +101,21 @@ const calldata = encodeExecute({
 
 ## Protocol (must match `contracts/interfaces/ISSPVault.sol` byte for byte)
 
-| Item            | Value                                                                                                                                                                                  |
-| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Address         | `0x41 ‖ keccak256(uncompressedPub[1:])[12:]`, base58check                                                                                                                              |
-| `CONFIG_TAG`    | `keccak256("SSP_TRON_VAULT_CONFIG_V1")`                                                                                                                                                |
-| `configHash`    | `keccak256(CONFIG_TAG ‖ uint8 threshold ‖ signers)` — `abi.encodePacked`, signers n × 20 bytes strictly ascending, 1 ≤ n ≤ 40, 1 ≤ threshold ≤ n                                       |
-| Clone init code | `61 ‖ 004d ‖ 3d81600a3d39f3363d3d373d3d3d363d73 ‖ impl20 ‖ 5af43d82803e903d91602b57fd5bf3 ‖ configHash`                                                                                |
-| Vault address   | `keccak256(0x41 ‖ factory20 ‖ configHash ‖ keccak256(initCode))[12:]`                                                                                                                  |
-| TIP-712 domain  | `EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)`, `"SSP Vault"`, `"1"`, chainId mainnet 728126428 / Nile 3448148188, verifyingContract = the vault |
-| `Call`          | `Call(address to,uint256 value,bytes data,uint256 tokenId,uint256 tokenValue)`                                                                                                         |
-| `Fee`           | `Fee(address token,uint256 amount,address recipient)` — `token = address(0)` is TRX; paid immediately after the calls                                                                  |
-| `Op`            | `Op(Call[] calls,uint256 nonce,uint256 deadline,Fee fee)` + referenced types                                                                                                           |
-| Message         | `SSPVaultMessage(bytes32 hash)` (TRC-1271, never valid as an Op signature)                                                                                                             |
-| Signatures      | 65-byte `r ‖ s ‖ v`, v ∈ {27, 28}, low-s; packed in ascending recovered-signer order                                                                                                   |
-| Nonces          | unordered bitmap: `word = nonce >> 8`, `bit = nonce & 255`                                                                                                                             |
-| Call rules      | ≤ 16 calls; `tokenValue > 0` ⇒ `tokenId ≠ 0`, empty `data`, `value = 0`; `tokenValue = 0` ⇒ `tokenId = 0`; fee `amount > 0` ⇒ `recipient ≠ address(0)`                                 |
+| Item            | Value                                                                                                                                                                                                                                                                                                                                     |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Address         | `0x41 ‖ keccak256(uncompressedPub[1:])[12:]`, base58check                                                                                                                                                                                                                                                                                 |
+| `CONFIG_TAG`    | `keccak256("SSP_TRON_VAULT_CONFIG_V1")`                                                                                                                                                                                                                                                                                                   |
+| `configHash`    | `keccak256(CONFIG_TAG ‖ uint8 threshold ‖ signers)` — `abi.encodePacked`, signers n × 20 bytes strictly ascending, 1 ≤ n ≤ 40, 1 ≤ threshold ≤ n                                                                                                                                                                                          |
+| Clone init code | `61 ‖ 004d ‖ 3d81600a3d39f3363d3d373d3d3d363d73 ‖ impl20 ‖ 5af43d82803e903d91602b57fd5bf3 ‖ configHash`                                                                                                                                                                                                                                   |
+| Vault address   | `keccak256(0x41 ‖ factory20 ‖ configHash ‖ keccak256(initCode))[12:]`                                                                                                                                                                                                                                                                     |
+| TIP-712 domain  | `EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)`, `"SSP Vault"`, `"1"`, chainId mainnet 728126428 / Nile 3448148188, verifyingContract = the vault                                                                                                                                                    |
+| `Call`          | `Call(address to,uint256 value,bytes data,uint256 tokenId,uint256 tokenValue)`                                                                                                                                                                                                                                                            |
+| `Fee`           | `Fee(address token,uint256 amount,address recipient)` — `token = address(0)` is TRX; paid immediately after the calls                                                                                                                                                                                                                     |
+| `Op`            | `Op(Call[] calls,uint256 nonce,uint256 deadline,Fee fee)` + referenced types                                                                                                                                                                                                                                                              |
+| Message         | `SSPVaultMessage(bytes32 hash)` (TRC-1271, never valid as an Op signature)                                                                                                                                                                                                                                                                |
+| Signatures      | 65-byte `r ‖ s ‖ v`, v ∈ {27, 28}, low-s; packed in ascending recovered-signer order                                                                                                                                                                                                                                                      |
+| Nonces          | unordered bitmap: `word = nonce >> 8`, `bit = nonce & 255`                                                                                                                                                                                                                                                                                |
+| Call rules      | ≤ 16 calls; `tokenValue > 0` ⇒ `tokenId ≠ 0`, empty `data`, `value = 0`; `tokenValue = 0` ⇒ `tokenId = 0`; TRX / TRC-10 amounts ≤ int64 and never to a system address `1..0xffffffff` (`isHaltingRecipient`); no TRX / TRC-10 transfer and no fee to the vault itself (`validateOpForVault`); fee `amount > 0` ⇒ `recipient ≠ address(0)` |
 
 `sdk/test/vectors/sdk-vectors.json` pins all of the above for fixed keys,
 configs and Ops (config hashes, init code, vault addresses, domain separators,
@@ -164,7 +164,7 @@ low-s), `verifySignature`, `isCanonicalSignature`, `orderSignatures`,
 `undelegateResource`, `voteWitnesses`, `withdrawReward`) and `unknown`
 (raw calldata). Policy failures throw `PolicyError` with a stable `reason`.
 
-**ABI** — `encodeExecute` / `decodeExecute`, `encodeHashOp`, `encodeDeploy`,
+**ABI** — `encodeExecute` / `decodeExecute` (the vault call), `encodeSponsorExecute` / `decodeSponsorExecute` (the sponsor call with its `energyCap`), `encodeHashOp`, `encodeDeploy`,
 `encodeVaultAddress`, `encodeConfigHashOf`, `encodeNonceBitmap`,
 `encodeIsNonceUsed`, `encodeConfigHash`, `encodeDomainSeparator`,
 `encodeHashMessage`, `encodeSignatureBundle`, `encodeIsValidSignature`,
@@ -178,7 +178,8 @@ factory, sponsor and OpenZeppelin custom errors). `FUNCTION_SIGNATURES` and
 `serializeTransaction` (hex for `/wallet/broadcasthex`), `decodeTransaction`,
 `decodeRawTransactionHex`, `decodeExecuteTransaction`,
 `recoverTransactionSigners`. `feeLimit: 0n` omits the field (the sponsored
-relayer path).
+relayer path); `energyCap` on `buildExecuteTransaction` targets the sponsor's
+`execute(…, energyCap)`.
 
 **Networks** — `NETWORKS` (frozen `mainnet` / `nile`), `getNetwork(name | NetworkConfig)`,
 `requireDeployment`, `requireSponsor`. Pass an explicit `NetworkConfig` for a
@@ -259,29 +260,49 @@ the pinned table does not have, or define a custom network name.
   attached, trailing bytes or a dirty address word make it `unknown`). Fees must
   go to the pinned collector in an allowed token under its ceiling; deadlines
   must be live and at most 2 h ahead by default. Unknown TRC-20 tokens are
-  shown with `symbol: null` and an `UNKNOWN_TOKEN` warning.
+  shown with `symbol: null` and an `UNKNOWN_TOKEN` warning. The `tokens` and
+  `feeCeilings` options are refused when ambiguous (two different entries for
+  one token address, two ceilings for one fee token) or when `decimals` is not
+  an integer in 0..255.
 - **Strict decoders everywhere.** ABI and protobuf decoders re-encode and
   require byte equality, so duplicate protobuf fields (protobuf-java is
   last-wins), unknown fields, memos, non-minimal varints, aliased ABI tails,
   dirty address words (tron-solc would silently mask them) and trailing bytes
   are rejected. Only `TransferContract` and `TriggerSmartContract` decode;
   `AccountPermissionUpdateContract` (46) and everything else is refused.
+  `decodeExecuteTransaction` also refuses an `execute` trigger carrying
+  `call_value`, `call_token_value` or `token_id` (a clone silently accepts
+  attached TRC-10); callers still check `contractAddress` and `ownerAddress`.
 - **Signatures follow the vault.** `recoverSigner` enforces v ∈ {27, 28} and
   low-s exactly like OpenZeppelin `ECDSA`; malleated signatures are rejected,
   never normalised. `assembleSignatures` refuses signatures by non-members and
   duplicate signers.
 - **Networks fail closed.** Only `'mainnet'` and `'nile'` resolve by name;
   unpinned deployment addresses throw `NOT_DEPLOYED` rather than fall back.
+  An explicit `NetworkConfig` may reuse a pinned name only to fill values the
+  table still has as `null`; any other difference throws `UNKNOWN_NETWORK`.
   Addresses never identify a network (the `0x41` prefix is shared), so the
   TIP-712 `chainId` and `verifyingContract` do the binding.
-- **Relay path:** relayers send with `fee_limit` omitted (`feeLimit: 0n`) on
+- **Relay path:** the sponsor calls the vault with at most `energyCap` energy
+  (the TVM forwards ALL remaining energy on a CALL, so an Op that diverges
+  between simulation and execution would otherwise burn the sponsor's whole
+  `origin_energy_limit`); relayers pass ~1.25x the simulated energy. Relayers send with `fee_limit` omitted (`feeLimit: 0n`) on
   delegated bandwidth and must simulate every Op first — `triggerConstant`
-  treats `transaction.ret[0].ret === 'FAILED'` or a result message as a
-  failure, because a reverting simulation still reports `result.result = true`.
+  treats any `transaction.ret[i].ret === 'FAILED'`, a `contractRet` other than
+  `SUCCESS`, a result message or code as a failure, because a reverting
+  simulation still reports `result.result = true` (`energy_used` is never
+  evidence of success). `estimateEnergy` throws instead of returning 0.
+- **Node answers are bound to the transaction.** `broadcastHex` returns the
+  locally computed `sha256(raw)` txid for every transaction the SDK can decode
+  and refuses a node that reports another; `getTransactionInfo` refuses a
+  receipt whose `id` is not the txid asked for. The client has no timers:
+  inject a `fetch` with a timeout (the CLI binary aborts requests after 30 s).
 - **No secrets in the SDK.** The HTTP client takes no API keys (add them in a
   proxy). `localSigner` copies the key and can zero its copy with `destroy()`;
   the CLI reads the submitter key from an environment variable and never
-  prints it.
+  prints it, bounds `--fee-limit` to 15,000 TRX, and escapes control and bidi
+  characters in anything it prints (node messages and revert strings are
+  attacker-chosen text).
 - `hasCode` uses `getcontractinfo.runtimecode`: `getcontract.bytecode` is empty
   for CREATE2-created clones.
 

@@ -31,6 +31,7 @@ interface ISSPSponsor {
     event RelayerSet(address indexed relayer, bool allowed);
 
     error NotRelayer();
+    error BadEnergyCap();
 
     function factory() external view returns (address);
 
@@ -38,8 +39,16 @@ interface ISSPSponsor {
 
     function setRelayer(address relayer, bool allowed) external;
 
-    /// Deploy the vault for (signers, threshold) if needed, then execute `op` on it.
-    function execute(bytes calldata signers, uint8 threshold, Op calldata op, bytes calldata signatures)
-        external
-        returns (address vault);
+    /// Deploy the vault for (signers, threshold) if needed, then execute `op` on it with at most
+    /// `energyCap` energy. The TVM forwards ALL remaining energy on a CALL (no EIP-150 63/64 rule), so
+    /// without a cap an Op that diverges between the relay's simulation and execution (a recipient that
+    /// gains code, a racing Op) could burn the sponsor's whole origin_energy_limit. The relayer passes
+    /// ~1.25x the simulated energy; running out of it reverts the whole transaction.
+    function execute(
+        bytes calldata signers,
+        uint8 threshold,
+        Op calldata op,
+        bytes calldata signatures,
+        uint256 energyCap
+    ) external returns (address vault);
 }

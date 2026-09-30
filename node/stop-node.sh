@@ -30,7 +30,7 @@ if [ -f "$NODE_DIR/node.pid" ]; then
   rm -f "$NODE_DIR/node.pid"
 else
   # Fallback: a node started from this NODE_DIR without a pid file.
-  for PID in $(pgrep -f "FullNode-aarch64.jar -c private-net.conf" || true); do
+  for PID in $(pgrep -f "FullNode-aarch64[^ ]*.jar -c private-net.conf" || true); do
     if [ "$(lsof -a -p "$PID" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')" = "$NODE_DIR" ]; then
       echo "stopping java-tron pid $PID (no pid file)"
       stop_pid "$PID"

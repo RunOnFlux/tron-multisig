@@ -37,7 +37,7 @@ const art = (name) =>
   JSON.parse(fs.readFileSync(path.join(BUILD, `${name}.json`), 'utf8'));
 const log = (...a) => console.log('[setup]', ...a);
 
-export const SPONSOR_ORIGIN_ENERGY_LIMIT = 1_500_000;
+export const SPONSOR_ORIGIN_ENERGY_LIMIT = 1_250_000;
 const S_ENERGY_STAKE = 100_000n * TRX;
 const S_BANDWIDTH_STAKE = 20_000n * TRX;
 const R_BANDWIDTH_DELEGATION = 10_000n * TRX;

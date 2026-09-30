@@ -1,4 +1,5 @@
 import {
+  addressToBytes20,
   addressToBytes21,
   parseAddress,
   ZERO_ADDRESS,
@@ -10,6 +11,29 @@ import { expectKeys, parseDecimal, parseJsonAddress } from './json.js';
 
 /** Maximum calls in one Op (the vault's `MAX_CALLS`). */
 export const MAX_CALLS = 16;
+
+/** TVM TRX / TRC-10 amounts are int64 (the vault's `MAX_TVM_AMOUNT`). */
+export const MAX_TVM_AMOUNT = (1n << 63n) - 1n;
+/** Addresses 1..0xffffffff are TVM precompiles / system addresses (the vault's `PRECOMPILE_BOUND`). */
+export const PRECOMPILE_BOUND = 0xffffffffn;
+
+function uint160(address: TronAddress): bigint {
+  let x = 0n;
+  for (const b of addressToBytes20(address)) x = (x << 8n) | BigInt(b);
+  return x;
+}
+
+/**
+ * Mirrors `SSPVault._isHaltingTransfer` (minus the vault-self case, which
+ * needs the vault — see `validateOpForVault`): a TRX / TRC-10 amount above
+ * int64 or a transfer to a precompile makes java-tron THROW instead of fail
+ * the call, burning the whole energy limit, so the vault refuses them.
+ */
+export function isHaltingRecipient(to: TronAddress, amount: bigint): boolean {
+  if (amount > MAX_TVM_AMOUNT) return true;
+  const u = uint160(to);
+  return u !== 0n && u <= PRECOMPILE_BOUND;
+}
 
 /** Fee token meaning "TRX" (`address(0)`). */
 export const TRX_FEE_TOKEN: TronAddress = ZERO_ADDRESS;
@@ -91,6 +115,13 @@ export function validateCall(c: Call, index = 0): void {
   } else if (c.tokenId !== 0n) {
     throw invalidOp(`${at}: tokenId must be 0 when tokenValue is 0`);
   }
+  // The vault reverts BadCall for these (they would halt the TVM otherwise).
+  if (c.tokenValue > 0n && isHaltingRecipient(c.to, c.tokenValue)) {
+    throw invalidOp(`${at}: TRC-10 amount above int64 or to a system address`);
+  }
+  if (c.value > 0n && isHaltingRecipient(c.to, c.value)) {
+    throw invalidOp(`${at}: TRX amount above int64 or to a system address`);
+  }
 }
 
 /**
@@ -106,9 +137,11 @@ export function validateOp(op: Op): void {
   if (op.calls.length > MAX_CALLS) {
     throw invalidOp(`op has more than ${MAX_CALLS} calls`);
   }
-  op.calls.forEach((c, i) => {
-    validateCall(c, i);
-  });
+  // An index loop, not forEach: a sparse array's holes must fail here as
+  // `INVALID_OP` rather than be skipped and crash a later map/spread.
+  for (let i = 0; i < op.calls.length; i++) {
+    validateCall(op.calls[i] as Call, i);
+  }
   checkU256(op.nonce, 'nonce');
   checkU256(op.deadline, 'deadline');
   if (typeof op.fee !== 'object' || op.fee === null) {
@@ -119,6 +152,30 @@ export function validateOp(op: Op): void {
   checkAddress(op.fee.recipient, 'fee.recipient');
   if (op.fee.amount > 0n && op.fee.recipient === ZERO_ADDRESS) {
     throw invalidOp('fee.recipient must not be address(0) when fee.amount > 0');
+  }
+  if (
+    op.fee.amount > 0n &&
+    op.fee.token === ZERO_ADDRESS &&
+    isHaltingRecipient(op.fee.recipient, op.fee.amount)
+  ) {
+    throw invalidOp('TRX fee above int64 or to a system address');
+  }
+}
+
+/**
+ * The vault-dependent rules of `SSPVault` on top of `validateOp`: no TRX or
+ * TRC-10 transfer to the vault itself (java-tron would halt; the vault
+ * reverts `BadCall`) and no fee paid to the vault itself (`FeeFailed`).
+ */
+export function validateOpForVault(op: Op, vault: TronAddress): void {
+  validateOp(op);
+  op.calls.forEach((c, i) => {
+    if (c.to === vault && (c.value > 0n || c.tokenValue > 0n)) {
+      throw invalidOp(`calls[${i}]: TRX / TRC-10 transfer to the vault itself`);
+    }
+  });
+  if (op.fee.amount > 0n && op.fee.recipient === vault) {
+    throw invalidOp('fee.recipient must not be the vault itself');
   }
 }
 

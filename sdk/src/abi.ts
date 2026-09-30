@@ -32,8 +32,10 @@ const OP_TUPLE =
 
 /** Canonical Solidity function signatures (the selector preimages). */
 export const FUNCTION_SIGNATURES = Object.freeze({
-  // SSPVault and SSPSponsor share this signature (and so the selector).
+  // SSPVault.execute (self-submitted / escape hatch).
   execute: `execute(bytes,uint8,${OP_TUPLE},bytes)`,
+  // SSPSponsor.execute: the relayer adds the energy cap for the vault call.
+  sponsorExecute: `execute(bytes,uint8,${OP_TUPLE},bytes,uint256)`,
   // SSPVaultFactory
   deploy: 'deploy(bytes32)',
   vaultAddress: 'vaultAddress(bytes32)',
@@ -481,6 +483,56 @@ export function encodeExecute(args: ExecuteArgs): Uint8Array {
     opEnc(args.op),
     BYTES(args.signaturesPacked, 'signaturesPacked'),
   ]);
+}
+
+/** Arguments of `SSPSponsor.execute`: the vault arguments plus the energy cap. */
+export interface SponsorExecuteArgs extends ExecuteArgs {
+  /** Max energy the vault call may use (the relayer passes ~1.25x the simulated energy). */
+  readonly energyCap: bigint;
+}
+
+/** Largest energy cap accepted (well above the TVM's per-transaction limits). */
+export const MAX_SPONSOR_ENERGY_CAP = 100_000_000n;
+
+function checkEnergyCap(cap: bigint): void {
+  if (typeof cap !== 'bigint' || cap <= 0n || cap > MAX_SPONSOR_ENERGY_CAP) {
+    throw invalidInput(`energyCap must be in 1..${MAX_SPONSOR_ENERGY_CAP}`);
+  }
+}
+
+/** Calldata for `SSPSponsor.execute(signers, threshold, op, signatures, energyCap)`. */
+export function encodeSponsorExecute(args: SponsorExecuteArgs): Uint8Array {
+  checkEnergyCap(args.energyCap);
+  encodeExecute(args); // same validation as the vault call (op, signers, signatures)
+  return call('sponsorExecute', [
+    BYTES(args.signersPacked, 'signersPacked'),
+    U8(args.threshold, 'threshold'),
+    opEnc(args.op),
+    BYTES(args.signaturesPacked, 'signaturesPacked'),
+    U(args.energyCap, 'energyCap'),
+  ]);
+}
+
+/** Strict decode of `SSPSponsor.execute` calldata (selector included). */
+export function decodeSponsorExecute(calldata: Uint8Array): SponsorExecuteArgs {
+  const v = decodeCanonical(stripSelector(calldata, 'sponsorExecute'), [
+    'bytes',
+    'uint8',
+    OP_SHAPE,
+    'bytes',
+    'uint256',
+  ]);
+  const inner = decodeExecute(
+    call('execute', [
+      BYTES(asBytes(v[0]), 'signersPacked'),
+      U8(Number(asBig(v[1])), 'threshold'),
+      opEnc(opFromValue(v[2] as AbiValue)),
+      BYTES(asBytes(v[3]), 'signaturesPacked'),
+    ]),
+  );
+  const energyCap = asBig(v[4]);
+  checkEnergyCap(energyCap);
+  return { ...inner, energyCap };
 }
 
 /**

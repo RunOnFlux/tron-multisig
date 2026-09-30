@@ -1,5 +1,5 @@
 // SSPSponsor: allow-list, Ownable2Step, and who pays what. The sponsor is deployed by S with
-// consume_user_resource_percent = 0 / origin_energy_limit = 1,500,000, so S's staked energy pays for the
+// consume_user_resource_percent = 0 / origin_energy_limit = 1,250,000, so S's staked energy pays for the
 // whole call tree; the relayer R sends with fee_limit = 0 (raw HTTP) on bandwidth delegated by S.
 import { describe, it, expect, beforeAll } from 'vitest';
 import {
@@ -15,6 +15,8 @@ import {
   RUN,
   randomKey,
   exec,
+  simulate,
+  isNonceUsed,
   signOp,
   expectOk,
   expectRevert,
@@ -295,14 +297,15 @@ describe('who pays for failures', () => {
   });
 
   // TVM finding: CALL forwards ALL remaining energy (no EIP-150 63/64 retention), so a callee that exhausts
-  // its energy (INVALID, or an unbounded loop) leaves the vault nothing to revert with: the WHOLE transaction
-  // ends OUT_OF_ENERGY (not CallFailed) and every unit of the limit is consumed. The constant-call
-  // simulation reports energy_used 0 plus an OutOfEnergy/OutOfTime exception message.
+  // its energy (INVALID, or an unbounded loop) leaves nothing to revert with. SSPSponsor therefore calls the
+  // vault with an explicit energyCap: the TVM gives the callee min(cap, energy left) (Program.getCallEnergy),
+  // so S loses about the cap, never its whole origin_energy_limit.
   for (const [label, fn, args] of [
     ['INVALID opcode', 'invalid', []],
     ['unbounded loop', 'spin', [10n ** 12n]],
   ]) {
-    it(`Burner ${label} through the sponsor: OUT_OF_ENERGY, S burns exactly origin_energy_limit`, async () => {
+    it(`Burner ${label} through the sponsor: bounded by energyCap, not origin_energy_limit`, async () => {
+      const cap = 150_000n;
       const op = V.makeOp({
         nonce: fn === 'invalid' ? 10 : 11,
         calls: [
@@ -312,26 +315,38 @@ describe('who pays for failures', () => {
           }),
         ],
       });
-      const r = await sponsored(v, op, { timeRetries: 0 });
-      // OUT_OF_TIME (possible on a busy host) burns exactly the same: the whole limit
-      expect(['OUT_OF_ENERGY', 'OUT_OF_TIME']).toContain(r.result);
-      expect(r.contractResult).toBe('');
-      expect(r.energy_usage_total).toBe(ORIGIN_LIMIT);
-      expect(r.origin_energy_usage).toBe(ORIGIN_LIMIT);
+      const r = await sponsored(v, op, { timeRetries: 0, energyCap: cap });
+      expect(r.result).not.toBe('SUCCESS');
+      expect(r.energy_usage_total).toBeLessThanOrEqual(Number(cap) + 60_000);
+      expect(r.energy_usage_total).toBeLessThan(ORIGIN_LIMIT);
+      expect(r.origin_energy_usage).toBe(r.energy_usage_total);
       expect(r.sim.ok).toBe(false);
-      expect(r.sim.energy).toBe(0); // a relay that only compares simulated energy to a quote would PASS this
-      expect(r.sim.message).toMatch(/OutOfEnergyException|OutOfTimeException/);
       recordEnergy(
-        `sponsored-${fn}`,
-        `sponsored Op calling Burner.${fn}() (${label})`,
+        `sponsored-${fn}-capped`,
+        `sponsored Op calling Burner.${fn}() (${label}), energyCap ${cap}`,
         r,
-        { originEnergyLimit: ORIGIN_LIMIT, simMessage: r.sim.message },
+        { originEnergyLimit: ORIGIN_LIMIT, energyCap: Number(cap) },
       );
       console.log(
-        `${label} via sponsor: ${r.result}, ${r.energy_usage_total} energy burned by S (origin_energy_limit ${ORIGIN_LIMIT}); sim: ${r.sim.message.slice(0, 90)}`,
+        `${label} via sponsor with cap ${cap}: ${r.result}, ${r.energy_usage_total} energy billed to S (origin_energy_limit ${ORIGIN_LIMIT})`,
       );
     });
   }
+
+  it('energyCap 0 is refused (BadEnergyCap)', async () => {
+    const op = V.makeOp({ nonce: 12 });
+    const s = await simulate(v, op, { via: 'sponsor', energyCap: 0n });
+    expect(s.ok).toBe(false);
+    expect(s.revert?.name).toBe('BadEnergyCap');
+  });
+
+  it('a cap below what the Op needs reverts the whole sponsored transaction (nothing moves)', async () => {
+    const op = V.makeOp({ nonce: 13, calls: [V.trxCall(OUTSIDER.addr, 1n)] });
+    const r = await sponsored(v, op, { energyCap: 5_000n, simulate: false });
+    expect(r.result).not.toBe('SUCCESS');
+    expect(r.energy_usage_total).toBeLessThan(80_000);
+    expect(await isNonceUsed(v, 13n)).toBe(false);
+  });
 
   it('Burner INVALID self-submitted: OUT_OF_ENERGY, the submitter burns its whole fee_limit', async () => {
     const op = V.makeOp({

@@ -11,6 +11,7 @@ import {
 import { bytesToHex, hexToBytes, utf8Decode } from './bytes.js';
 import { invalidInput, RpcError, TronMultisigError } from './errors.js';
 import { refFromBlock, type BlockRef } from './tx/build.js';
+import { decodeTransaction } from './tx/decode.js';
 
 /*
  * Thin client for the java-tron full-node HTTP API (`/wallet/*`,
@@ -258,7 +259,15 @@ export class TronHttpClient {
         `${path}: request failed (${e instanceof Error ? e.message : 'unknown'})`,
       );
     }
-    const text = await res.text();
+    let text: string;
+    try {
+      text = await res.text();
+    } catch (e) {
+      throw new RpcError(
+        `${path}: reading the response failed (${e instanceof Error ? e.message : 'unknown'})`,
+        res.status,
+      );
+    }
     if (!res.ok) throw new RpcError(`${path}: HTTP ${res.status}`, res.status);
     try {
       return parseJsonLossless(text);
@@ -372,8 +381,10 @@ export class TronHttpClient {
   /**
    * Simulate a call (`/wallet/triggerconstantcontract`). A reverting call
    * still comes back with `result.result = true`, so failure is detected from
-   * `transaction.ret[0].ret === 'FAILED'`, a `result.message`, or a missing
-   * `result.result`; the revert data is decoded.
+   * any `transaction.ret[i].ret === 'FAILED'`, any `contractRet` other than
+   * `SUCCESS`, a `result.message`, a `result.code`, or a missing
+   * `result.result`; the revert data is decoded. `energy_used` never counts
+   * as evidence of success.
    */
   async triggerConstant(p: ConstantCallParams): Promise<ConstantCallResult> {
     const r = obj(
@@ -384,12 +395,17 @@ export class TronHttpClient {
     const message = decodeNodeMessage(result.message);
     const tx = isObj(r.transaction) ? r.transaction : {};
     const ret = Array.isArray(tx.ret) ? (tx.ret as readonly JsonValue[]) : [];
-    const ret0 = isObj(ret[0]) ? ret[0] : {};
+    const retFailed = ret.some(
+      (x) =>
+        isObj(x) &&
+        (x.ret === 'FAILED' ||
+          (x.contractRet !== undefined && x.contractRet !== 'SUCCESS')),
+    );
     const failed =
       result.result !== true ||
       message !== null ||
       result.code !== undefined ||
-      ret0.ret === 'FAILED';
+      retFailed;
     const cr = Array.isArray(r.constant_result)
       ? (r.constant_result as readonly JsonValue[])
       : [];
@@ -411,28 +427,51 @@ export class TronHttpClient {
     return r.result;
   }
 
-  /** `/wallet/estimateenergy` (not enabled on every node). */
+  /**
+   * `/wallet/estimateenergy` (not enabled on every node). A failed estimate
+   * (`result.result` not true, a failure `message` or `code`, or no positive
+   * `energy_required`) throws `SIMULATION_FAILED`; it never returns 0.
+   */
   async estimateEnergy(p: ConstantCallParams): Promise<bigint> {
     const r = obj(
       await this.post('/wallet/estimateenergy', this.constantBody(p)),
       'estimateenergy',
     );
     const result = isObj(r.result) ? r.result : {};
-    if (result.result !== true) {
+    const message = decodeNodeMessage(result.message);
+    const energy = int(r.energy_required, 'energy_required');
+    if (
+      result.result !== true ||
+      message !== null ||
+      (result.code !== undefined && result.code !== 'SUCCESS') ||
+      energy <= 0n
+    ) {
       throw new TronMultisigError(
         'SIMULATION_FAILED',
-        `estimateenergy failed: ${decodeNodeMessage(result.message) ?? 'unknown'}`,
+        `estimateenergy failed: ${message ?? 'no energy estimate'}`,
       );
     }
-    return int(r.energy_required, 'energy_required');
+    return energy;
   }
 
-  /** `/wallet/broadcasthex`. Throws `BROADCAST_FAILED` with the node's code and message. */
+  /**
+   * `/wallet/broadcasthex`. Throws `BROADCAST_FAILED` with the node's code and
+   * message. For every transaction this SDK can strictly decode (everything it
+   * builds), the returned txid is computed locally as `sha256(raw)`, and a
+   * node that reports a different one is refused (`RPC`): callers then never
+   * wait on, record or report a transaction they did not send.
+   */
   async broadcastHex(
     transactionHex: string,
   ): Promise<{ readonly txid: string }> {
     if (!/^(?:[0-9a-f]{2})+$/.test(transactionHex)) {
       throw invalidInput('transaction must be lowercase hex without 0x');
+    }
+    let local: string | null;
+    try {
+      local = decodeTransaction(transactionHex).txid;
+    } catch {
+      local = null;
     }
     const r = obj(
       await this.post('/wallet/broadcasthex', { transaction: transactionHex }),
@@ -445,10 +484,21 @@ export class TronHttpClient {
         `broadcast refused: ${code} ${decodeNodeMessage(r.message) ?? ''}`.trim(),
       );
     }
-    return { txid: typeof r.txid === 'string' ? r.txid : '' };
+    const reported = typeof r.txid === 'string' ? r.txid.toLowerCase() : '';
+    if (local === null) return { txid: reported };
+    if (reported !== '' && reported !== local) {
+      throw new RpcError(
+        `broadcasthex: the node reported a different txid (${reported}) than the transaction sent (${local}); its outcome is unknown`,
+      );
+    }
+    return { txid: local };
   }
 
-  /** `null` until the transaction is in a block (or solidified, with `solidified`). */
+  /**
+   * `null` until the transaction is in a block (or solidified, with
+   * `solidified`). A receipt whose `id` is not `txid` (e.g. a proxy caching
+   * POST responses by URL) is refused with an `RpcError`.
+   */
   async getTransactionInfo(
     txid: string,
     options: { readonly solidified?: boolean } = {},
@@ -464,6 +514,12 @@ export class TronHttpClient {
       'gettransactioninfobyid',
     );
     if (Object.keys(i).length === 0) return null;
+    const id = str(i.id, 'id').toLowerCase();
+    if (id !== txid) {
+      throw new RpcError(
+        `gettransactioninfobyid: asked for ${txid}, the node answered for ${id}`,
+      );
+    }
     const receipt = isObj(i.receipt) ? i.receipt : {};
     const crs = Array.isArray(i.contractResult)
       ? (i.contractResult as readonly JsonValue[])
@@ -473,7 +529,7 @@ export class TronHttpClient {
       typeof receipt.result === 'string' ? receipt.result : 'SUCCESS';
     const failed = result !== 'SUCCESS' || i.result === 'FAILED';
     return {
-      id: str(i.id, 'id'),
+      id,
       blockNumber: int(i.blockNumber, 'blockNumber'),
       blockTimestamp: int(i.blockTimeStamp, 'blockTimeStamp'),
       fee: int(i.fee, 'fee'),

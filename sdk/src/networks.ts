@@ -51,6 +51,16 @@ export function isNetworkName(v: unknown): v is NetworkName {
   return v === 'mainnet' || v === 'nile';
 }
 
+/** Fields a config reusing a pinned name must agree on (where pinned). */
+const PINNED_FIELDS = [
+  'chainId',
+  'usdt',
+  'factory',
+  'implementation',
+  'sponsor',
+  'feeCollector',
+] as const;
+
 function optAddress(v: unknown, what: string): TronAddress | null {
   if (v === null) return null;
   if (typeof v !== 'string') {
@@ -108,7 +118,7 @@ export function getNetwork(
       'network.chainId must be in 1..2^32-1',
     );
   }
-  return Object.freeze({
+  const out: NetworkConfig = Object.freeze({
     name: network.name,
     chainId,
     usdt: optAddress(network.usdt, 'network.usdt'),
@@ -120,6 +130,23 @@ export function getNetwork(
     sponsor: optAddress(network.sponsor, 'network.sponsor'),
     feeCollector: optAddress(network.feeCollector, 'network.feeCollector'),
   });
+  // A config may reuse a pinned name ('mainnet' / 'nile') only to fill values
+  // the pinned table still has as null: otherwise a name check (e.g. in
+  // verifySignedOp or a payload's `network`) could pass for another chain id,
+  // token or deployment.
+  if (isNetworkName(out.name)) {
+    const pinned = NETWORKS[out.name];
+    for (const k of PINNED_FIELDS) {
+      const p = pinned[k];
+      if (p !== null && p !== out[k]) {
+        throw new TronMultisigError(
+          'UNKNOWN_NETWORK',
+          `network.${k} differs from the pinned ${out.name} value; use another network name`,
+        );
+      }
+    }
+  }
+  return out;
 }
 
 /** Factory + implementation of a network, or a `NOT_DEPLOYED` error. */

@@ -74,14 +74,23 @@ describe('ABI parity: hand-written spec interface == tron-solc output', () => {
     });
   }
 
-  it('execute() has the same selector on vault and sponsor (packed-bytes signature of spec §4.4)', () => {
-    const sig =
-      'execute(bytes,uint8,((address,uint256,bytes,uint256,uint256)[],uint256,uint256,(address,uint256,address)),bytes)';
-    expect(V.vaultIface.getFunction('execute').format('sighash')).toBe(sig);
-    expect(V.sponsorIface.getFunction('execute').format('sighash')).toBe(sig);
-    expect(V.vaultIface.getFunction('execute').selector).toBe(
-      keccak256(toUtf8Bytes(sig)).slice(0, 10),
+  it('execute() signatures: vault (spec §4.4) and sponsor (+ uint256 energyCap)', () => {
+    const op =
+      '((address,uint256,bytes,uint256,uint256)[],uint256,uint256,(address,uint256,address))';
+    const vaultSig = `execute(bytes,uint8,${op},bytes)`;
+    const sponsorSig = `execute(bytes,uint8,${op},bytes,uint256)`;
+    expect(V.vaultIface.getFunction('execute').format('sighash')).toBe(
+      vaultSig,
     );
+    expect(V.sponsorIface.getFunction('execute').format('sighash')).toBe(
+      sponsorSig,
+    );
+    expect(V.vaultIface.getFunction('execute').selector).toBe(
+      keccak256(toUtf8Bytes(vaultSig)).slice(0, 10),
+    );
+    // pinned in the SDK (FUNCTION_SIGNATURES.execute / .sponsorExecute)
+    expect(V.vaultIface.getFunction('execute').selector).toBe('0x42a0c557');
+    expect(V.sponsorIface.getFunction('execute').selector).toBe('0xe489804d');
   });
 });
 
@@ -118,7 +127,7 @@ describe('constants and wiring', () => {
     const c = await N.getContract(C.SSPSponsor.base58);
     expect(c.origin_address).toBe(ACTORS.S.base58);
     expect(Number(c.consume_user_resource_percent ?? 0)).toBe(0);
-    expect(Number(c.origin_energy_limit)).toBe(1_500_000);
+    expect(Number(c.origin_energy_limit)).toBe(1_250_000);
   });
 });
 

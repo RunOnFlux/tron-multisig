@@ -23,7 +23,10 @@ import {ISSPVault, Op, Call, Fee} from "./interfaces/ISSPVault.sol";
 ///        this implementation never see TRC-10 attached to a call on a clone: such TRC-10 simply lands in
 ///        the vault as a deposit (like a TransferAssetContract), spendable only by a signed Op;
 ///      - a CALL forwards ALL remaining energy (no EIP-150 63/64 rule): a call target that loops or hits
-///        INVALID makes the whole transaction OUT_OF_ENERGY. Sponsors must only sponsor known targets.
+///        INVALID makes the whole transaction OUT_OF_ENERGY. Sponsors must only sponsor known targets;
+///      - CALL / CALLTOKEN THROW instead of failing for a TRX / TRC-10 transfer to the vault itself, to an
+///        account-less precompile, or above int64. An exceptional halt behind the proxy burns the whole
+///        energy limit, so such transfers are refused up front (BadCall / FeeFailed).
 contract SSPVault is ISSPVault, TIP712, ReentrancyGuardTransient {
     string public constant VERSION = "1";
 
@@ -46,6 +49,11 @@ contract SSPVault is ISSPVault, TIP712, ReentrancyGuardTransient {
     uint256 private constant ADDRESS_MASK = 0x00ffffffffffffffffffffffffffffffffffffffff;
     /// EIP-1167 runtime length; the 32-byte configHash follows it in every clone's code.
     uint256 private constant CLONE_RUNTIME = 0x2d;
+    /// java-tron reads TRX / TRC-10 amounts as int64 and THROWS (no CALL failure flag) above this.
+    uint256 private constant MAX_TVM_AMOUNT = 0x7fffffffffffffff;
+    /// Every TVM precompile (0x01-0x0a, 0x100, 0x20003, 0x20009, 0x1000001-0x1000015 on 4.8.2.2) is at or
+    /// below this address; nobody can hold a key or a contract there.
+    uint256 private constant PRECOMPILE_BOUND = 0xffffffff;
 
     /// Permit2-style unordered nonces: word = nonce >> 8, bit = nonce & 255.
     mapping(uint256 word => uint256 bits) public nonceBitmap;
@@ -102,10 +110,13 @@ contract SSPVault is ISSPVault, TIP712, ReentrancyGuardTransient {
 
         _useNonce(op.nonce);
 
+        // Fee first: an Op whose fee balance was spent after it was simulated (e.g. by a racing Op of
+        // the same vault) reverts here, before its calls run, so a sponsor pays for a cheap revert
+        // rather than for every call. The Op is atomic either way.
+        _payFee(op.fee);
         for (uint256 i; i < callCount; ++i) {
             _performCall(i, op.calls[i]);
         }
-        _payFee(op.fee);
 
         emit Executed(digest, op.nonce, msg.sender, callCount);
     }
@@ -366,22 +377,38 @@ contract SSPVault is ISSPVault, TIP712, ReentrancyGuardTransient {
         }
     }
 
+    /// A TRX / TRC-10 transfer the TVM would not fail cleanly. java-tron does not return 0 from CALL /
+    /// CALLTOKEN for a transfer to the sending contract itself ("Cannot transfer ... to yourself"), to a
+    /// precompile without an account, or of an amount above int64: it THROWS out of the calling frame. The
+    /// TVM never refunds an exceptionally halted callee's energy, and the EIP-1167 proxy DELEGATECALLs with
+    /// all of it, so such a halt burns the whole fee_limit (or the sponsor's origin_energy_limit).
+    function _isHaltingTransfer(address to, uint256 amount) private view returns (bool) {
+        return amount > MAX_TVM_AMOUNT || to == address(this)
+            || (to != address(0) && uint160(to) <= PRECOMPILE_BOUND);
+    }
+
     function _performCall(uint256 index, Call calldata c) private {
         if (c.tokenValue != 0) {
-            // TRC-10 moves only through transferToken: no calldata, no TRX attached.
+            // TRC-10 moves only through transferToken: no calldata, no TRX attached. (tron-solc's
+            // transferToken itself reverts on a token id outside (1,000,000, 2^63).)
             if (c.tokenId == 0 || c.data.length != 0 || c.value != 0) revert BadCall(index);
+            if (_isHaltingTransfer(c.to, c.tokenValue)) revert BadCall(index);
             payable(c.to).transferToken(c.tokenValue, trcToken(c.tokenId));
             return;
         }
         if (c.tokenId != 0) revert BadCall(index);
+        if (c.value != 0 && _isHaltingTransfer(c.to, c.value)) revert BadCall(index);
         (bool ok, bytes memory reason) = c.to.call{value: c.value}(c.data);
         if (!ok) revert CallFailed(index, reason);
     }
 
     function _payFee(Fee calldata fee) private {
         if (fee.amount == 0) return;
-        if (fee.recipient == address(0)) revert FeeFailed();
+        // A fee to the vault itself: TRX would halt the TVM; a TRC-20 self-transfer moves nothing but would
+        // still emit FeePaid.
+        if (fee.recipient == address(0) || fee.recipient == address(this)) revert FeeFailed();
         if (fee.token == address(0)) {
+            if (_isHaltingTransfer(fee.recipient, fee.amount)) revert FeeFailed();
             (bool ok,) = payable(fee.recipient).call{value: fee.amount}("");
             if (!ok) revert FeeFailed();
         } else {

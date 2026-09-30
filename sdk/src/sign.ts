@@ -230,17 +230,25 @@ export function assembleSignatures(
 /**
  * Sign a digest with any `TronSigner` and verify the result recovers to the
  * signer's address (catches a signer holding a different key than it claims).
+ * The signer gets a copy of the digest, and the check runs against a private
+ * copy of both the digest and the returned signature, so a signer (or bridge)
+ * that rewrites either buffer cannot change what is verified.
  */
 export async function signDigestChecked(
   signer: TronSigner,
   digest: Uint8Array,
 ): Promise<Uint8Array> {
   checkDigest(digest);
-  const sig = await signer.signDigest(digest);
-  if (!verifySignature(digest, sig, signer.address)) {
+  const own = Uint8Array.from(digest);
+  const returned: unknown = await signer.signDigest(Uint8Array.from(own));
+  if (!(returned instanceof Uint8Array)) {
+    throw invalidSignature('signer returned something other than bytes');
+  }
+  const sig = Uint8Array.from(returned);
+  if (!verifySignature(own, sig, signer.address)) {
     throw invalidSignature(
       'signer returned a signature that does not recover to its address',
     );
   }
-  return Uint8Array.from(sig);
+  return sig;
 }

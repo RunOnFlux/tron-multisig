@@ -15,6 +15,7 @@ import {
   buildDeployTransaction,
   buildTrigger,
   DEFAULT_EXPIRATION_MS,
+  MAX_FEE_LIMIT,
   serializeTransaction,
   signTransaction,
   type TxTiming,
@@ -59,6 +60,20 @@ Deployment overrides (only where the pinned table has no value, or for a custom 
 `;
 
 const DEFAULT_FEE_LIMIT = 300_000_000n;
+
+/**
+ * Escape characters that could drive or spoof a terminal (C0/C1 controls incl.
+ * ESC and newlines, bidi overrides) as `\uXXXX`. Error messages carry text
+ * from the node and from contract revert strings, which anyone can choose.
+ * The escape is also valid inside a JSON string, so log lines stay JSON.
+ */
+export function printable(s: string): string {
+  return s.replace(
+    // eslint-disable-next-line no-control-regex
+    /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g,
+    (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'),
+  );
+}
 
 type Flags = Readonly<Record<string, string | true>>;
 
@@ -218,6 +233,11 @@ async function submit(f: Flags, io: CliIo): Promise<void> {
   }
   const feeLimit =
     feeLimitFlag === undefined ? DEFAULT_FEE_LIMIT : BigInt(feeLimitFlag);
+  if (feeLimit > MAX_FEE_LIMIT) {
+    throw usage(
+      `--fee-limit must be at most ${MAX_FEE_LIMIT.toString()} sun (15,000 TRX)`,
+    );
+  }
   const dryRun = f['dry-run'] === true;
 
   const signed = parseSignedOp(await io.readFile(file));
@@ -228,7 +248,7 @@ async function submit(f: Flags, io: CliIo): Promise<void> {
   key.fill(0);
   const client = new TronHttpClient(rpc, io.fetch);
   const log = (o: Readonly<Record<string, unknown>>): void => {
-    io.stdout(JSON.stringify(o));
+    io.stdout(printable(JSON.stringify(o)));
   };
   log({
     step: 'verified',
@@ -374,14 +394,16 @@ export async function runCli(
     return 0;
   } catch (e) {
     if (e instanceof UsageError) {
-      io.stderr(`error: ${e.message}\n\n${USAGE}`);
+      io.stderr(`error: ${printable(e.message)}\n\n${USAGE}`);
       return 2;
     }
     if (isTronMultisigError(e)) {
-      io.stderr(`error [${e.code}]: ${e.message}`);
+      io.stderr(`error [${e.code}]: ${printable(e.message)}`);
       return 1;
     }
-    io.stderr(`error: ${e instanceof Error ? e.message : 'unknown failure'}`);
+    io.stderr(
+      `error: ${e instanceof Error ? printable(e.message) : 'unknown failure'}`,
+    );
     return 1;
   }
 }

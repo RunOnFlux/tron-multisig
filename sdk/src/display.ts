@@ -7,7 +7,7 @@ import {
 } from './abi.js';
 import { isArray, to0x } from './bytes.js';
 import { invalidInput, PolicyError } from './errors.js';
-import { TRX_FEE_TOKEN, validateOp, type Op } from './op.js';
+import { TRX_FEE_TOKEN, validateOpForVault, type Op } from './op.js';
 
 /*
  * decodeOpForDisplay is the security boundary on a signing device: it turns
@@ -246,19 +246,49 @@ function checkOptions(o: DisplayOptions): void {
   }
   if (!isArray(o.feeCeilings))
     throw invalidInput('options.feeCeilings must be an array');
-  for (const f of o.feeCeilings) {
-    if (!isValidAddress(f.token) || typeof f.max !== 'bigint' || f.max < 0n) {
+  // Lookups are first-match: an ambiguous list would silently pick one entry.
+  const ceilingTokens = new Set<string>();
+  for (const f of o.feeCeilings as readonly unknown[]) {
+    const c = f as FeeCeiling | null;
+    if (
+      typeof c !== 'object' ||
+      c === null ||
+      !isValidAddress(c.token) ||
+      typeof c.max !== 'bigint' ||
+      c.max < 0n
+    ) {
       throw invalidInput('invalid fee ceiling');
     }
+    if (ceilingTokens.has(c.token)) {
+      throw invalidInput('a fee token has more than one ceiling');
+    }
+    ceilingTokens.add(c.token);
   }
-  for (const t of o.tokens ?? []) {
+  if (o.tokens !== undefined && !isArray(o.tokens)) {
+    throw invalidInput('options.tokens must be an array');
+  }
+  const known = new Map<string, TokenInfo>();
+  for (const x of (o.tokens ?? []) as readonly unknown[]) {
+    const t = x as TokenInfo | null;
     if (
+      typeof t !== 'object' ||
+      t === null ||
       !isValidAddress(t.address) ||
       typeof t.symbol !== 'string' ||
-      !Number.isInteger(t.decimals)
+      !Number.isInteger(t.decimals) ||
+      t.decimals < 0 ||
+      t.decimals > 255
     ) {
       throw invalidInput('invalid token info');
     }
+    const prev = known.get(t.address);
+    if (
+      prev !== undefined &&
+      (prev.symbol !== t.symbol || prev.decimals !== t.decimals)
+    ) {
+      throw invalidInput('conflicting token info for one token address');
+    }
+    known.set(t.address, t);
   }
   if (
     o.policy === 'consumer' &&
@@ -300,8 +330,10 @@ function allowed(kind: DisplayCallKind, o: DisplayOptions): boolean {
  *   `feeCeilings` and not above its ceiling.
  */
 export function decodeOpForDisplay(op: Op, options: DisplayOptions): OpDisplay {
-  validateOp(op);
   checkOptions(options);
+  // Includes the vault-dependent rules: no TRX / TRC-10 to the vault itself and
+  // no fee to the vault (the vault reverts them; java-tron would halt on some).
+  validateOpForVault(op, options.vault);
   const tokens = options.tokens ?? [];
   const calls = op.calls.map((_, i) => classify(op, i, options.vault, tokens));
   const warnings: DisplayWarning[] = [];

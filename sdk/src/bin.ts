@@ -16,9 +16,16 @@ interface NodeProcess {
   getBuiltinModule(id: string): unknown;
 }
 
+/** Per-request limit (headers and body): a stalled node must not hang the CLI. */
+const REQUEST_TIMEOUT_MS = 30_000;
+
 const g = globalThis as unknown as {
   readonly process: NodeProcess;
-  readonly fetch: FetchLike;
+  fetch(
+    url: string,
+    init: Parameters<FetchLike>[1] & { readonly signal: unknown },
+  ): ReturnType<FetchLike>;
+  readonly AbortSignal: { timeout(ms: number): unknown };
   setTimeout(fn: () => void, ms: number): unknown;
 };
 const proc = g.process;
@@ -28,7 +35,11 @@ const fs = proc.getBuiltinModule('node:fs') as {
 
 const io: CliIo = {
   env: proc.env,
-  fetch: (url, init) => g.fetch(url, init),
+  fetch: (url, init) =>
+    g.fetch(url, {
+      ...init,
+      signal: g.AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    }),
   readFile: (path) => fs.readFileSync(path, 'utf8'),
   stdout: (s) => proc.stdout.write(s.endsWith('\n') ? s : s + '\n'),
   stderr: (s) => proc.stderr.write(s.endsWith('\n') ? s : s + '\n'),

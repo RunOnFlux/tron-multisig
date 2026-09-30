@@ -15,6 +15,7 @@
     },
     "functionSignatures": {
       "execute": "execute(bytes,uint8,((address,uint256,bytes,uint256,uint256)[],uint256,uint256,(address,uint256,address)),bytes)",
+      "sponsorExecute": "execute(bytes,uint8,((address,uint256,bytes,uint256,uint256)[],uint256,uint256,(address,uint256,address)),bytes,uint256)",
       "deploy": "deploy(bytes32)",
       "vaultAddress": "vaultAddress(bytes32)",
       "configHashOf": "configHashOf(bytes,uint8)",
@@ -45,6 +46,7 @@
     },
     "selectors": {
       "execute": "0x42a0c557",
+      "sponsorExecute": "0xe489804d",
       "deploy": "0x2b85ba38",
       "vaultAddress": "0xa6e6a121",
       "configHashOf": "0x413de4ca",

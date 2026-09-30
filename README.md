@@ -54,7 +54,7 @@ cd .. && yarn node:start && yarn chain:align && yarn test && yarn node:stop
 
 ## TVM specifics the contracts rely on
 
-These are verified on java-tron 4.8.2.2.
+These are verified on java-tron 4.8.2.3.
 
 - **CREATE2** uses the `0x41` prefix; the EVM `0xff` formula gives the wrong address.
 - **ecrecover** returns a dirty `0x41‖address` word. The vault masks recovered addresses explicitly.

@@ -34,15 +34,20 @@ contract SSPSponsor is ISSPSponsor, Ownable2Step {
     }
 
     /// @inheritdoc ISSPSponsor
-    function execute(bytes calldata signers, uint8 threshold, Op calldata op, bytes calldata signatures)
-        external
-        returns (address vault)
-    {
+    function execute(
+        bytes calldata signers,
+        uint8 threshold,
+        Op calldata op,
+        bytes calldata signatures,
+        uint256 energyCap
+    ) external returns (address vault) {
         if (!isRelayer[msg.sender]) revert NotRelayer();
+        if (energyCap == 0) revert BadEnergyCap();
         ISSPVaultFactory f = ISSPVaultFactory(factory);
         bytes32 configHash = f.configHashOf(signers, threshold);
         vault = f.vaultAddress(configHash);
         if (vault.code.length == 0) f.deploy(configHash);
-        ISSPVault(vault).execute(signers, threshold, op, signatures);
+        // Bounded: the TVM takes min(energyCap, energy left) for the callee (Program.getCallEnergy).
+        ISSPVault(vault).execute{gas: energyCap}(signers, threshold, op, signatures);
     }
 }

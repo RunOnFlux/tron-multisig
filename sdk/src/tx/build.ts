@@ -1,5 +1,5 @@
 import type { TronAddress } from '../address.js';
-import { encodeDeploy, encodeExecute } from '../abi.js';
+import { encodeDeploy, encodeExecute, encodeSponsorExecute } from '../abi.js';
 import { bytesToBigint, bytesToHex, hexToBytes } from '../bytes.js';
 import { invalidInput, invalidTransaction } from '../errors.js';
 import { sha256 } from '../hash.js';
@@ -150,20 +150,32 @@ export interface ExecuteTxParams extends TxTiming {
   /** From `assembleSignatures`. */
   readonly signaturesPacked: Uint8Array;
   readonly feeLimit: bigint;
+  /**
+   * Set when `target` is the SPONSOR: its `execute` takes an energy cap for
+   * the vault call (~1.25x the simulated energy). Omit for a vault target.
+   */
+  readonly energyCap?: bigint;
 }
 
-/** `TriggerSmartContract` calling `execute(signers, threshold, op, signatures)`. */
+/**
+ * `TriggerSmartContract` calling `execute(signers, threshold, op, signatures)`
+ * on a vault, or `execute(…, energyCap)` on the sponsor when `energyCap` is set.
+ */
 export function buildExecuteTransaction(p: ExecuteTxParams): RawTransaction {
   const cfg = validateConfig(p.config);
+  const args = {
+    signersPacked: packSigners(cfg.signers),
+    threshold: cfg.threshold,
+    op: p.op,
+    signaturesPacked: p.signaturesPacked,
+  };
   return buildTrigger({
     owner: p.owner,
     contract: p.target,
-    data: encodeExecute({
-      signersPacked: packSigners(cfg.signers),
-      threshold: cfg.threshold,
-      op: p.op,
-      signaturesPacked: p.signaturesPacked,
-    }),
+    data:
+      p.energyCap === undefined
+        ? encodeExecute(args)
+        : encodeSponsorExecute({ ...args, energyCap: p.energyCap }),
     feeLimit: p.feeLimit,
     ref: p.ref,
     expiration: p.expiration,

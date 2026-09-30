@@ -7,6 +7,8 @@ pragma solidity 0.8.31;
 /// - TRC-10:         tokenValue > 0 and tokenId != 0; data MUST be empty and value MUST be 0
 ///                   (the TVM only moves TRC-10 through `transferToken`, never with calldata).
 /// `to` is the 20-byte TVM address (TRON base58 minus the 0x41 prefix).
+/// A TRX or TRC-10 amount must fit an int64 and must not go to the vault itself or to a precompile address
+/// (1 .. 0xffffffff): the TVM would halt instead of failing the call, so these revert BadCall(index).
 struct Call {
     address to;
     uint256 value;
@@ -15,9 +17,11 @@ struct Call {
     uint256 tokenValue;
 }
 
-/// Network fee the members sign. Paid by the vault in the SAME transaction, after the calls.
+/// Network fee the members sign. Paid by the vault in the SAME transaction, before the calls.
 /// token == address(0) pays TRX; any other address is a TRC-20 paid with a balance-checked transfer.
 /// amount == 0 means no fee (self-submitted operations).
+/// FeeFailed if recipient is address(0) or the vault itself, or (TRX) the amount does not fit an int64 or
+/// the recipient is a precompile address.
 struct Fee {
     address token;
     uint256 amount;

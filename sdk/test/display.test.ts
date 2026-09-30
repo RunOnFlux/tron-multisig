@@ -219,10 +219,12 @@ describe('classification', () => {
     expect(d.isCancellation).toBe(true);
     expect(d.fee).toEqual({ kind: 'none' });
   });
-  it('warns on transfers to the vault itself and on no-op calls', () => {
+  it('refuses TRX / TRC-10 to the vault itself and a fee paid to the vault; warns on no-op calls', () => {
+    expect(() =>
+      decodeOpForDisplay(op([trxTransferCall(VAULT, 1n)]), enterprise),
+    ).toThrow(/to the vault itself/);
     const d = decodeOpForDisplay(
       op([
-        trxTransferCall(VAULT, 1n),
         {
           to: OTHER,
           value: 0n,
@@ -233,10 +235,7 @@ describe('classification', () => {
       ]),
       { ...enterprise, allowUnknown: true },
     );
-    expect(d.warnings).toEqual([
-      { code: 'TRANSFER_TO_VAULT', index: 0 },
-      { code: 'NO_OP_CALL', index: 1 },
-    ]);
+    expect(d.warnings).toEqual([{ code: 'NO_OP_CALL', index: 0 }]);
   });
 });
 

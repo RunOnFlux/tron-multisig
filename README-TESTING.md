@@ -1,7 +1,7 @@
 # Integration tests on a real java-tron node
 
 The contracts in `contracts/` are tested end to end on a **real TVM**: a single-SR java-tron
-GreatVoyage-v4.8.2.2 private chain started from `FullNode-aarch64.jar` (no Docker), with the
+GreatVoyage-v4.8.2.3 private chain started from `FullNode-aarch64.jar` (no Docker), with the
 proposal-only chain parameters aligned to mainnet. Every assertion is made against broadcast
 transactions (`gettransactioninfobyid`) or constant calls on that node.
 
@@ -12,7 +12,7 @@ signing. It does not import `sdk/` or the compiled ABI; the parity tests compare
 
 ## Requirements
 
-- macOS arm64 (the pinned jar is `FullNode-aarch64.jar`; sha256 `82fc2ce1…c201`, checked on every start)
+- macOS arm64 (the pinned jar is `FullNode-aarch64.jar` of GreatVoyage-v4.8.2.3; sha256 `a3f0d01f…4819`, checked on download and on every start)
 - JDK 17 at `/Library/Java/JavaVirtualMachines/zulu-17.jdk` (override with `JAVA=/path/to/java`)
 - Node ≥ 20 and yarn; ports 8090/8091 (HTTP), 8545 (JSON-RPC), 50051/50061 (gRPC), 18888 (p2p) free
 
@@ -89,6 +89,7 @@ run, so vault addresses and nonces are always fresh.
 | `08-stake`         | Stake 2.0 self-calls: freeze, vote, delegate/undelegate to EOAs, refusal for contracts, BadResource, unfreeze, withdrawExpireUnfreeze (no-op), cancelAllUnfreezeV2, withdrawReward                                                                                                           |
 | `09-hooks`         | NFT receiver hooks, no fallback                                                                                                                                                                                                                                                              |
 | `10-sdk-vectors`   | `sdk/test/vectors/sdk-vectors.json` against the independent encoder and the deployed contracts (skipped if absent)                                                                                                                                                                           |
+| `11-audit`         | Security review: value transfers the TVM would halt on (to self, to precompiles, above int64, TRX fee to self) are clean `BadCall`/`FeeFailed` reverts, not fee_limit burns; sponsor TOCTOU (fee drained after simulation); 40-of-40; last nonce word; fee token = vault                     |
 | `90-energy`        | Controlled energy/bandwidth measurements → `build/energy-snapshot.json` and `ENERGY.md`                                                                                                                                                                                                      |
 
 ## Outputs

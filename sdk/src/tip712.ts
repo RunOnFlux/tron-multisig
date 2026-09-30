@@ -47,13 +47,11 @@ const addrWord = (a: TronAddress): Uint8Array => {
 
 /** Normalise a TIP-712 chain id: an integer in `[1, 2^32)` (already masked). */
 export function tip712ChainId(chainId: bigint | number): bigint {
-  const c = typeof chainId === 'number' ? BigInt(chainId) : chainId;
-  if (
-    typeof c !== 'bigint' ||
-    (typeof chainId === 'number' && !Number.isSafeInteger(chainId)) ||
-    c <= 0n ||
-    c > 0xffffffffn
-  ) {
+  const c =
+    typeof chainId === 'number' && Number.isSafeInteger(chainId)
+      ? BigInt(chainId)
+      : chainId;
+  if (typeof c !== 'bigint' || c <= 0n || c > 0xffffffffn) {
     throw invalidInput(
       'chainId must be the 4-byte TIP-712 chain id (1..2^32-1)',
     );

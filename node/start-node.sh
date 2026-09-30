@@ -9,8 +9,10 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 NODE_DIR="${NODE_DIR:-$HERE/data}"
 JAVA="${JAVA:-/Library/Java/JavaVirtualMachines/zulu-17.jdk/Contents/Home/bin/java}"
 TRON_HOST="${TRON_HOST:-http://127.0.0.1:8090}"
-JAR_URL=https://github.com/tronprotocol/java-tron/releases/download/GreatVoyage-v4.8.2.2/FullNode-aarch64.jar
-JAR_SHA256=82fc2ce15dd7197541d2f9e2ececf4005c0cb30dfb7e190d035d04c57141c201
+JAVA_TRON_VERSION=GreatVoyage-v4.8.2.3   # mandatory mainnet upgrade, 2026-09-30
+JAR_URL=https://github.com/tronprotocol/java-tron/releases/download/$JAVA_TRON_VERSION/FullNode-aarch64.jar
+JAR_SHA256=a3f0d01fb20d456dcaf1b361638f046ba8396fa2f4e8e494b3a07c5d6f7d4819   # = GitHub release asset digest
+JAR="FullNode-aarch64-$JAVA_TRON_VERSION.jar"   # versioned name: an old jar can never be picked up
 
 mkdir -p "$NODE_DIR"
 cd "$NODE_DIR"
@@ -20,15 +22,16 @@ if [ -f node.pid ] && kill -0 "$(cat node.pid)" 2>/dev/null; then
   exit 0
 fi
 
-if [ ! -f FullNode-aarch64.jar ]; then
-  echo "downloading FullNode-aarch64.jar (GreatVoyage-v4.8.2.2)…"
-  curl -sL -o FullNode-aarch64.jar.part "$JAR_URL"
-  mv FullNode-aarch64.jar.part FullNode-aarch64.jar
+if [ ! -f "$JAR" ]; then
+  echo "downloading FullNode-aarch64.jar ($JAVA_TRON_VERSION)…"
+  curl -fsSL -o "$JAR.part" "$JAR_URL"
+  echo "$JAR_SHA256  $JAR.part" | shasum -a 256 -c -
+  mv "$JAR.part" "$JAR"
 fi
-echo "$JAR_SHA256  FullNode-aarch64.jar" | shasum -a 256 -c -
+echo "$JAR_SHA256  $JAR" | shasum -a 256 -c -
 
 cp "$HERE/private-net.conf" "$NODE_DIR/private-net.conf"
-nohup "$JAVA" -Xms1g -Xmx4g -XX:+UseG1GC -jar FullNode-aarch64.jar -c private-net.conf --witness -d output-directory > node-stdout.log 2>&1 &
+nohup "$JAVA" -Xms1g -Xmx4g -XX:+UseG1GC -jar "$JAR" -c private-net.conf --witness -d output-directory > node-stdout.log 2>&1 &
 echo $! > node.pid
 echo "java-tron pid $(cat node.pid)  (logs: $NODE_DIR/logs/tron.log)"
 
