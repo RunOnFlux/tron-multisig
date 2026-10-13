@@ -155,15 +155,47 @@ describe('halting transfers (mirrors SSPVault._isHaltingTransfer)', () => {
         validateOp(op([trc10TransferCall(sys, 1_000_001n, 1n)])),
       ).toThrow(/system address/);
     }
-    // address(0) (a burn) and the first address above the bound are fine
+    // address(0) does not HALT the TVM (the vault would burn it) and the
+    // first address above the bound is fine
     expect(isHaltingRecipient(ZERO_ADDRESS, 1n)).toBe(false);
     expect(isHaltingRecipient(JUST_ABOVE, 1n)).toBe(false);
-    // a data-only call to a precompile moves nothing and is allowed
+    // ...but the SDK never builds a burn (TRX-6)
     expect(() =>
       validateOp(
         op([
           {
-            to: PRECOMPILE_1,
+            to: ZERO_ADDRESS,
+            value: 1n,
+            data: new Uint8Array(0),
+            tokenId: 0n,
+            tokenValue: 0n,
+          },
+        ]),
+      ),
+    ).toThrow(/address\(0\)/);
+    // a call with calldata to a precompile / address(0) reaches no code: the
+    // vault reverts BadCall (TRX-4), so it is refused up front
+    for (const to of [PRECOMPILE_1, PRECOMPILE_MAX, ZERO_ADDRESS]) {
+      expect(() =>
+        validateOp(
+          op([
+            {
+              to,
+              value: 0n,
+              data: new Uint8Array([1, 2, 3]),
+              tokenId: 0n,
+              tokenValue: 0n,
+            },
+          ]),
+        ),
+      ).toThrow(/no code/);
+    }
+    // calldata to the first non-system address is a normal contract call
+    expect(() =>
+      validateOp(
+        op([
+          {
+            to: JUST_ABOVE,
             value: 0n,
             data: new Uint8Array([1, 2, 3]),
             tokenId: 0n,

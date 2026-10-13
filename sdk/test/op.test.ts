@@ -262,6 +262,60 @@ describe('normalizeOp', () => {
       normalizeOp({ calls: [{ to: TO, data: 'zz' }], nonce: 1, deadline: 1 }),
     );
   });
+  it('TRX-6: `to` is required (never defaulted to address(0)); a non-zero fee names token and recipient', () => {
+    expectInvalid(() =>
+      normalizeOp({
+        calls: [{ value: '5' } as unknown as { to: string }],
+        nonce: 1,
+        deadline: 1,
+      }),
+    );
+    expectInvalid(() =>
+      normalizeOp({
+        calls: [{ to: undefined as unknown as string, data: '0x01' }],
+        nonce: 1,
+        deadline: 1,
+      }),
+    );
+    expectInvalid(() =>
+      normalizeOp({ calls: [], nonce: 1, deadline: 1, fee: { amount: 1 } }),
+    );
+    expectInvalid(() =>
+      normalizeOp({
+        calls: [],
+        nonce: 1,
+        deadline: 1,
+        fee: { amount: 1, recipient: TO },
+      }),
+    );
+    expect(
+      normalizeOp({
+        calls: [],
+        nonce: 1,
+        deadline: 1,
+        fee: { amount: 1, token: ZERO_ADDRESS, recipient: TO },
+      }).fee,
+    ).toEqual({ token: ZERO_ADDRESS, amount: 1n, recipient: TO });
+    // An explicit zero fee may leave token / recipient out.
+    expect(
+      normalizeOp({ calls: [], nonce: 1, deadline: 1, fee: { amount: 0 } }).fee,
+    ).toEqual(noFee());
+    // TRX / TRC-10 to address(0) is a burn: refused
+    expectInvalid(() =>
+      normalizeOp({
+        calls: [{ to: ZERO_ADDRESS, value: '1' }],
+        nonce: 1,
+        deadline: 1,
+      }),
+    );
+    expectInvalid(() =>
+      normalizeOp({
+        calls: [{ to: ZERO_ADDRESS, tokenId: 1000001, tokenValue: 1 }],
+        nonce: 1,
+        deadline: 1,
+      }),
+    );
+  });
 });
 
 describe('call builders', () => {

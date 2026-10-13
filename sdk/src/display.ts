@@ -50,8 +50,33 @@ export interface DisplayOptions {
   readonly allowApprove?: boolean;
   /** enterprise only: allow `unknown` calls, shown with raw calldata (default false). */
   readonly allowUnknown?: boolean;
-  /** enterprise only: allow vault self-calls (cancellation, Stake 2.0) (default true). */
+  /**
+   * enterprise only: allow the `invalidateNonces` self-call (it can only burn
+   * nonces, i.e. cancel Ops signed with them) (default false).
+   */
+  readonly allowNonceInvalidation?: boolean;
+  /**
+   * enterprise only: allow the Stake 2.0 self-calls (freeze / unfreeze TRX,
+   * delegate / undelegate resources to another account, vote, withdraw
+   * rewards) — they change what the vault's TRX can do, so they need an
+   * explicit org opt-in (default false).
+   */
+  readonly allowStaking?: boolean;
+  /**
+   * Legacy (prefer `allowNonceInvalidation` / `allowStaking`). Only an explicit
+   * `true` still means "both"; absent or `false` allows neither (it used to
+   * allow every self-call by default). Cannot be combined with the new flags.
+   */
   readonly allowSelfCalls?: boolean;
+}
+
+/** The self-call actions that only burn nonces; every other one is Stake 2.0. */
+export const NONCE_SELF_CALL_ACTIONS: readonly SelfCallAction['action'][] =
+  Object.freeze(['invalidateNonces']);
+
+/** Whether a self-call action is a Stake 2.0 action (anything but nonce invalidation). */
+export function isStakingSelfCall(action: SelfCallAction['action']): boolean {
+  return !NONCE_SELF_CALL_ACTIONS.includes(action);
 }
 
 /** Approvals at or above 2^128 base units are flagged as unlimited. */
@@ -123,8 +148,19 @@ export type DisplayFee =
       readonly decimals: number | null;
     };
 
+/**
+ * - `UNKNOWN_TOKEN`: a TRC-20 transfer / approve on a token not in `tokens`;
+ * - `UNKNOWN_CONTRACT`: an `unknown` call with calldata to a contract not in
+ *   `tokens` (the vault reverts if it has no code, but nothing here can tell
+ *   what it does);
+ * - `UNLIMITED_APPROVAL`, `TRANSFER_TO_VAULT`, `NO_OP_CALL`.
+ */
 export type DisplayWarningCode =
-  'UNLIMITED_APPROVAL' | 'UNKNOWN_TOKEN' | 'TRANSFER_TO_VAULT' | 'NO_OP_CALL';
+  | 'UNLIMITED_APPROVAL'
+  | 'UNKNOWN_TOKEN'
+  | 'UNKNOWN_CONTRACT'
+  | 'TRANSFER_TO_VAULT'
+  | 'NO_OP_CALL';
 
 export interface DisplayWarning {
   readonly code: DisplayWarningCode;
@@ -290,28 +326,57 @@ function checkOptions(o: DisplayOptions): void {
     }
     known.set(t.address, t);
   }
+  const flags = [
+    'allowApprove',
+    'allowUnknown',
+    'allowNonceInvalidation',
+    'allowStaking',
+    'allowSelfCalls',
+  ] as const;
+  for (const f of flags) {
+    if (o[f] !== undefined && typeof o[f] !== 'boolean') {
+      throw invalidInput(`options.${f} must be a boolean`);
+    }
+  }
   if (
-    o.policy === 'consumer' &&
-    (o.allowApprove === true ||
-      o.allowUnknown === true ||
-      o.allowSelfCalls === true)
+    o.allowSelfCalls !== undefined &&
+    (o.allowNonceInvalidation !== undefined || o.allowStaking !== undefined)
   ) {
+    throw invalidInput(
+      'options.allowSelfCalls (legacy) cannot be combined with allowNonceInvalidation / allowStaking',
+    );
+  }
+  if (o.policy === 'consumer' && flags.some((f) => o[f] === true)) {
     throw invalidInput(
       'the consumer policy cannot allow approve, unknown or self-calls',
     );
   }
 }
 
-function allowed(kind: DisplayCallKind, o: DisplayOptions): boolean {
-  if (CONSUMER_KINDS.includes(kind)) return true;
+/** The effective self-call permissions (both default to false). */
+function selfCallPermissions(o: DisplayOptions): {
+  nonceInvalidation: boolean;
+  staking: boolean;
+} {
+  const legacy = o.allowSelfCalls === true;
+  return {
+    nonceInvalidation: o.allowNonceInvalidation === true || legacy,
+    staking: o.allowStaking === true || legacy,
+  };
+}
+
+function allowed(c: DisplayCall, o: DisplayOptions): boolean {
+  if (CONSUMER_KINDS.includes(c.kind)) return true;
   if (o.policy === 'consumer') return false;
-  switch (kind) {
+  switch (c.kind) {
     case 'approve':
       return o.allowApprove === true;
     case 'unknown':
       return o.allowUnknown === true;
-    case 'selfCall':
-      return o.allowSelfCalls !== false;
+    case 'selfCall': {
+      const p = selfCallPermissions(o);
+      return isStakingSelfCall(c.action) ? p.staking : p.nonceInvalidation;
+    }
     default:
       return false;
   }
@@ -323,8 +388,10 @@ function allowed(kind: DisplayCallKind, o: DisplayOptions): boolean {
  * `PolicyError` (with a stable `reason`) for one the policy refuses:
  *
  * - consumer: only `trxTransfer`, `trc20Transfer` and `trc10Transfer`;
- * - enterprise: additionally `selfCall` (unless `allowSelfCalls: false`),
- *   `approve` only with `allowApprove`, `unknown` only with `allowUnknown`;
+ * - enterprise: additionally, each only with its explicit opt-in (every flag
+ *   defaults to false): `approve` (`allowApprove`), `unknown`
+ *   (`allowUnknown`), the `invalidateNonces` self-call
+ *   (`allowNonceInvalidation`) and the Stake 2.0 self-calls (`allowStaking`);
  * - deadline: not expired and at most `maxDeadlineSeconds` (default 2 h) ahead;
  * - fee: zero, or paid to exactly `feeCollector` in a token listed in
  *   `feeCeilings` and not above its ceiling.
@@ -337,8 +404,9 @@ export function decodeOpForDisplay(op: Op, options: DisplayOptions): OpDisplay {
   const tokens = options.tokens ?? [];
   const calls = op.calls.map((_, i) => classify(op, i, options.vault, tokens));
   const warnings: DisplayWarning[] = [];
+  const knownContracts = new Set(tokens.map((t) => t.address));
   for (const c of calls) {
-    if (!allowed(c.kind, options)) {
+    if (!allowed(c, options)) {
       throw new PolicyError(
         'CALL_KIND_NOT_ALLOWED',
         `call ${c.index} (${c.kind}) is not allowed by the ${options.policy} policy`,
@@ -369,6 +437,9 @@ export function decodeOpForDisplay(op: Op, options: DisplayOptions): OpDisplay {
       c.tokenValue === 0n
     ) {
       warnings.push({ code: 'NO_OP_CALL', index: c.index });
+    }
+    if (c.kind === 'unknown' && c.data !== '0x' && !knownContracts.has(c.to)) {
+      warnings.push({ code: 'UNKNOWN_CONTRACT', index: c.index });
     }
   }
 

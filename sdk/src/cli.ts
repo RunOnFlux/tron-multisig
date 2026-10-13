@@ -246,7 +246,7 @@ async function submit(f: Flags, io: CliIo): Promise<void> {
   const key = privateKeyFromEnv(io, keyEnv);
   const signer = localSigner(key);
   key.fill(0);
-  const client = new TronHttpClient(rpc, io.fetch);
+  const client = new TronHttpClient(rpc, io.fetch, { now: io.nowMs });
   const log = (o: Readonly<Record<string, unknown>>): void => {
     io.stdout(printable(JSON.stringify(o)));
   };

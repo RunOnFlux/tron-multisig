@@ -38,7 +38,26 @@ export type FetchLike = (
 export interface ClientOptions {
   /** Extra headers on every request (never put secrets in URLs). */
   readonly headers?: Readonly<Record<string, string>>;
+  /**
+   * Wall clock in unix milliseconds (default `Date.now`). Only
+   * `getCodeState` reads it, to decide whether the node's head is fresh.
+   */
+  readonly now?: () => number;
+  /**
+   * `getCodeState` answers `'none'` only when the node's head block is at
+   * most this old (default `DEFAULT_MAX_HEAD_LAG_MS`); a staler node gets
+   * `'unknown'`. A positive safe integer.
+   */
+  readonly maxHeadLagMs?: number;
 }
+
+/**
+ * Default `ClientOptions.maxHeadLagMs`: 2 minutes (40 blocks; also the
+ * device↔chain clock skew SSP tolerates). A node further behind than this is
+ * lagging or still syncing after a failover, and its "no such account" is no
+ * evidence that the address has no code.
+ */
+export const DEFAULT_MAX_HEAD_LAG_MS = 120_000;
 
 export type JsonValue =
   | null
@@ -211,6 +230,9 @@ export interface ContractMeta {
   readonly raw: Obj;
 }
 
+/** See `TronHttpClient.getCodeState`. */
+export type CodeState = 'code' | 'none' | 'unknown';
+
 export interface ContractInfo {
   /** Deployed runtime code (non-empty for every deployed contract, clones included). */
   readonly runtimeCode: Uint8Array;
@@ -221,6 +243,8 @@ export class TronHttpClient {
   readonly baseUrl: string;
   private readonly fetchLike: FetchLike;
   private readonly headers: Readonly<Record<string, string>>;
+  private readonly now: () => number;
+  private readonly maxHeadLagMs: number;
 
   constructor(
     baseUrl: string,
@@ -238,6 +262,15 @@ export class TronHttpClient {
       'content-type': 'application/json',
       ...(options.headers ?? {}),
     });
+    if (options.now !== undefined && typeof options.now !== 'function') {
+      throw invalidInput('now must be a function');
+    }
+    this.now = options.now ?? (() => Date.now());
+    const lag = options.maxHeadLagMs ?? DEFAULT_MAX_HEAD_LAG_MS;
+    if (!Number.isSafeInteger(lag) || lag <= 0) {
+      throw invalidInput('maxHeadLagMs must be a positive safe integer');
+    }
+    this.maxHeadLagMs = lag;
   }
 
   /** POST a JSON body to `path`; returns the parsed (lossless) JSON. */
@@ -612,12 +645,47 @@ export class TronHttpClient {
   }
 
   /**
-   * Whether `address` has deployed code. Uses `getcontractinfo.runtimecode`:
-   * `getcontract.bytecode` is empty for CREATE2 clones (spike T1).
+   * What the node says about code at `address`:
+   * - `'code'`: `getcontractinfo` returned non-empty runtime code;
+   * - `'none'`: no runtime code, the node's head block is fresh (at most
+   *   `maxHeadLagMs` old by `now`), AND `getaccount`, read after that head,
+   *   does not call it a contract (an EOA, an unactivated address, or a vault
+   *   not deployed yet);
+   * - `'unknown'`: anything else without code — the account's type is
+   *   `Contract` (a pruned or failed-over node answered `{}`), or the node's
+   *   head is stale, so its empty or non-contract answers (`{}` + `{}` from a
+   *   lagging or still-syncing node) prove nothing. Never treat this as
+   *   "no code".
+   * The head is read before the account: node state only moves forward, so
+   * an account read after a fresh head reflects at least that head.
+   * A failed lookup throws (`RpcError`); callers fail closed.
+   * Uses `getcontractinfo.runtimecode`: `getcontract.bytecode` is empty for
+   * CREATE2 clones (spike T1).
+   */
+  async getCodeState(address: TronAddress): Promise<CodeState> {
+    const info = await this.getContractInfo(address);
+    if (info !== null && info.runtimeCode.length > 0) return 'code';
+    const head = await this.getNowBlock();
+    // A head AHEAD of our clock (negative lag) is our clock running late,
+    // not a lagging node.
+    if (
+      BigInt(Math.floor(this.now())) - head.timestamp >
+      BigInt(this.maxHeadLagMs)
+    ) {
+      return 'unknown';
+    }
+    const account = await this.getAccount(address);
+    return account !== null && account.type === 'Contract' ? 'unknown' : 'none';
+  }
+
+  /**
+   * Whether `address` has deployed code. An empty `getcontractinfo` answer is
+   * cross-checked with the node's head freshness and the account type (see
+   * `getCodeState`): `'unknown'` counts as code, so a flaky or lagging node
+   * never makes a contract look like an EOA.
    */
   async hasCode(address: TronAddress): Promise<boolean> {
-    const info = await this.getContractInfo(address);
-    return info !== null && info.runtimeCode.length > 0;
+    return (await this.getCodeState(address)) !== 'none';
   }
 
   /** TRC-20 `balanceOf(holder)`; `owner` is the simulated caller (any address). */

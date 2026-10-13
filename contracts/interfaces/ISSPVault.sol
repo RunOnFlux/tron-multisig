@@ -9,6 +9,8 @@ pragma solidity 0.8.31;
 /// `to` is the 20-byte TVM address (TRON base58 minus the 0x41 prefix).
 /// A TRX or TRC-10 amount must fit an int64 and must not go to the vault itself or to a precompile address
 /// (1 .. 0xffffffff): the TVM would halt instead of failing the call, so these revert BadCall(index).
+/// A call with non-empty `data` must target an account WITH code (the TVM treats a call to a code-less
+/// account as a successful no-op): otherwise BadCall(index). Plain TRX (empty data) to an EOA is fine.
 struct Call {
     address to;
     uint256 value;

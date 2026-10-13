@@ -1,7 +1,7 @@
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { AbiCoder } from 'ethers';
 import { describe, expect, it } from 'vitest';
-import { ZERO_ADDRESS } from '../src/address.js';
+import { addressFromBytes20, ZERO_ADDRESS } from '../src/address.js';
 import {
   encodeTrc20Approve,
   encodeTrc20Transfer,
@@ -11,6 +11,7 @@ import {
 import { bytesToHex, concatBytes, hexToBytes, utf8 } from '../src/bytes.js';
 import {
   buildOp,
+  selfCall,
   trxFee,
   trxTransferCall,
   trc20TransferCall,
@@ -21,10 +22,12 @@ import { isTronMultisigError, PolicyError } from '../src/errors.js';
 import { keccak256 } from '../src/hash.js';
 import { NETWORKS, getNetwork } from '../src/networks.js';
 import {
+  normalizeOp,
   opFromJson,
   parseOp,
   stringifyOp,
   TRX_FEE_TOKEN,
+  validateCall,
   validateOp,
   type Op,
 } from '../src/op.js';
@@ -544,16 +547,154 @@ describe('decodeOpForDisplay: nothing but an exact transfer is shown as a transf
       expect(d.calls[0]!.kind).toBe('unknown');
     }
   });
-  it('a TRX transfer to address(0) is still shown with its real destination', () => {
-    const d = decodeOpForDisplay(
-      buildOp({
-        calls: [trxTransferCall(ZERO_ADDRESS, 1n)],
-        nonce: 1n,
-        deadline: NOW + 60n,
-      }),
-      consumer,
+  it('TRX-6: a TRX transfer to address(0) (a burn) can no longer be built, parsed or displayed', () => {
+    expectCode(() => trxTransferCall(ZERO_ADDRESS, 1n), 'INVALID_OP');
+    const burn = {
+      to: ZERO_ADDRESS,
+      value: 1n,
+      data: new Uint8Array(0),
+      tokenId: 0n,
+      tokenValue: 0n,
+    };
+    const raw = {
+      calls: [burn],
+      nonce: 1n,
+      deadline: NOW + 60n,
+      fee: { token: ZERO_ADDRESS, amount: 0n, recipient: ZERO_ADDRESS },
+    };
+    expectCode(() => decodeOpForDisplay(raw, consumer), 'INVALID_OP');
+    expectCode(
+      () =>
+        opFromJson({
+          calls: [
+            {
+              to: ZERO_ADDRESS,
+              value: '1',
+              data: '0x',
+              tokenId: '0',
+              tokenValue: '0',
+            },
+          ],
+          nonce: '1',
+          deadline: '2',
+          fee: { token: ZERO_ADDRESS, amount: '0', recipient: ZERO_ADDRESS },
+        }),
+      'INVALID_OP',
     );
-    expect(d.calls[0]).toMatchObject({ kind: 'trxTransfer', to: ZERO_ADDRESS });
+  });
+});
+
+// ------------------------------------------------------------------ 2026-10 review (TRX-3/4/6, poc/display-defaults.mjs)
+
+describe('2026-10 review regressions (poc/display-defaults.mjs)', () => {
+  it('TRX-3: the enterprise default no longer admits a Stake 2.0 self-call (delegateResource to an attacker)', () => {
+    const vault = 'TNUC9Qb1rRpS5CbWLmNMxXBjyFoydXjWFR';
+    const attacker = 'TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf';
+    const stakeOp = buildOp({
+      calls: [
+        selfCall(vault, {
+          action: 'delegateResource',
+          receiver: attacker,
+          amount: 10n ** 12n,
+          resource: 'ENERGY',
+        }),
+      ],
+      nonce: 1n,
+      deadline: NOW + 600n,
+    });
+    const base = {
+      vault,
+      now: NOW,
+      feeCollector: null,
+      feeCeilings: [],
+    } as const;
+    expect(() =>
+      decodeOpForDisplay(stakeOp, { ...base, policy: 'enterprise' }),
+    ).toThrow(PolicyError);
+    // Nonce invalidation does not open staking either.
+    expect(() =>
+      decodeOpForDisplay(stakeOp, {
+        ...base,
+        policy: 'enterprise',
+        allowNonceInvalidation: true,
+      }),
+    ).toThrow(PolicyError);
+  });
+
+  it('TRX-4: transfer(address,uint256) on address(0) (a code-less "token") is refused before display', () => {
+    const attacker = 'TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf';
+    expectCode(
+      () => trc20TransferCall(ZERO_ADDRESS, attacker, 5_000_000n),
+      'INVALID_OP',
+    );
+    const raw = {
+      calls: [
+        {
+          to: ZERO_ADDRESS,
+          value: 0n,
+          data: encodeTrc20Transfer(attacker, 5_000_000n),
+          tokenId: 0n,
+          tokenValue: 0n,
+        },
+      ],
+      nonce: 2n,
+      deadline: NOW + 600n,
+      fee: { token: ZERO_ADDRESS, amount: 0n, recipient: ZERO_ADDRESS },
+    };
+    expectCode(() => decodeOpForDisplay(raw, consumer), 'INVALID_OP');
+    // A precompile / system address has no code either.
+    const precompile = new Uint8Array(20);
+    precompile[19] = 2;
+    expectCode(
+      () =>
+        validateCall({ ...raw.calls[0]!, to: addressFromBytes20(precompile) }),
+      'INVALID_OP',
+    );
+  });
+
+  it("TRX-6: normalizeOp never defaults a missing `to` or a non-zero fee's token / recipient", () => {
+    expectCode(
+      () =>
+        normalizeOp({
+          calls: [{ value: 1 } as never],
+          nonce: 1,
+          deadline: 2,
+        }),
+      'INVALID_OP',
+    );
+    expectCode(
+      () =>
+        normalizeOp({
+          calls: [null as never],
+          nonce: 1,
+          deadline: 2,
+        }),
+      'INVALID_OP',
+    );
+    expectCode(
+      () =>
+        normalizeOp({
+          calls: [],
+          nonce: 1,
+          deadline: 2,
+          fee: { amount: 1, recipient: 'TNUC9Qb1rRpS5CbWLmNMxXBjyFoydXjWFR' },
+        }),
+      'INVALID_OP',
+    );
+    expectCode(
+      () =>
+        normalizeOp({
+          calls: [],
+          nonce: 1,
+          deadline: 2,
+          fee: { amount: 1, token: ZERO_ADDRESS },
+        }),
+      'INVALID_OP',
+    );
+    // A zero fee may still be omitted entirely.
+    expect(normalizeOp({ calls: [], nonce: 1, deadline: 2 }).fee.amount).toBe(
+      0n,
+    );
   });
 });
 
