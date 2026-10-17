@@ -15,6 +15,7 @@ import {
 } from '../src/calls.js';
 import {
   decodeOpForDisplay,
+  isStakingSelfCall,
   UNLIMITED_APPROVAL_THRESHOLD,
   type DisplayOptions,
 } from '../src/display.js';
@@ -176,10 +177,11 @@ describe('classification', () => {
       { action: 'voteWitnesses', votes: [{ witness: OTHER, count: 4n }] },
       { action: 'withdrawReward' },
     ] as const;
-    const d = decodeOpForDisplay(
-      op(actions.map((a) => selfCall(VAULT, a))),
-      enterprise,
-    );
+    const d = decodeOpForDisplay(op(actions.map((a) => selfCall(VAULT, a))), {
+      ...enterprise,
+      allowNonceInvalidation: true,
+      allowStaking: true,
+    });
     d.calls.forEach((c, i) => {
       expect(c).toEqual({ kind: 'selfCall', index: i, ...actions[i] });
     });
@@ -290,7 +292,7 @@ describe('consumer policy', () => {
 });
 
 describe('enterprise policy', () => {
-  it('approve / unknown only when allowed; self-calls unless disabled', () => {
+  it('approve / unknown / self-calls only when explicitly allowed', () => {
     expectPolicy(
       () => decodeOpForDisplay(op([approveCall(USDT, OTHER, 1n)]), enterprise),
       'CALL_KIND_NOT_ALLOWED',
@@ -312,13 +314,113 @@ describe('enterprise policy', () => {
     });
     expect(shown.calls[0]).toMatchObject({ kind: 'unknown', data: '0x09' });
     const sc = selfCall(VAULT, { action: 'withdrawReward' });
-    expect(decodeOpForDisplay(op([sc]), enterprise).calls[0]!.kind).toBe(
-      'selfCall',
+    // Default: no self-call at all (TRX-3: staking used to pass by default).
+    expectPolicy(
+      () => decodeOpForDisplay(op([sc]), enterprise),
+      'CALL_KIND_NOT_ALLOWED',
     );
+    expect(
+      decodeOpForDisplay(op([sc]), { ...enterprise, allowStaking: true })
+        .calls[0]!.kind,
+    ).toBe('selfCall');
     expectPolicy(
       () =>
         decodeOpForDisplay(op([sc]), { ...enterprise, allowSelfCalls: false }),
       'CALL_KIND_NOT_ALLOWED',
+    );
+  });
+
+  it('nonce invalidation and Stake 2.0 self-calls are separate opt-ins, both off by default', () => {
+    const cancel = selfCall(VAULT, {
+      action: 'invalidateNonces',
+      word: 0n,
+      mask: 2n,
+    });
+    const delegate = selfCall(VAULT, {
+      action: 'delegateResource',
+      receiver: OTHER,
+      amount: 10n ** 12n,
+      resource: 'ENERGY',
+    });
+    const vote = selfCall(VAULT, {
+      action: 'voteWitnesses',
+      votes: [{ witness: OTHER, count: 1n }],
+    });
+    for (const c of [cancel, delegate, vote]) {
+      expectPolicy(
+        () => decodeOpForDisplay(op([c]), enterprise),
+        'CALL_KIND_NOT_ALLOWED',
+        0,
+      );
+    }
+    const nonceOnly = { ...enterprise, allowNonceInvalidation: true };
+    expect(decodeOpForDisplay(op([cancel]), nonceOnly).calls[0]).toMatchObject({
+      kind: 'selfCall',
+      action: 'invalidateNonces',
+    });
+    for (const c of [delegate, vote]) {
+      expectPolicy(
+        () => decodeOpForDisplay(op([c]), nonceOnly),
+        'CALL_KIND_NOT_ALLOWED',
+        0,
+      );
+    }
+    const stakingOnly = { ...enterprise, allowStaking: true };
+    expectPolicy(
+      () => decodeOpForDisplay(op([cancel]), stakingOnly),
+      'CALL_KIND_NOT_ALLOWED',
+      0,
+    );
+    expect(
+      decodeOpForDisplay(op([delegate, vote]), stakingOnly).calls.map(
+        (c) => c.kind === 'selfCall' && c.action,
+      ),
+    ).toEqual(['delegateResource', 'voteWitnesses']);
+    // The deprecated flag: only an explicit `true` grants (both).
+    expect(
+      decodeOpForDisplay(op([cancel, delegate]), {
+        ...enterprise,
+        allowSelfCalls: true,
+      }).calls.length,
+    ).toBe(2);
+    expect(isStakingSelfCall('invalidateNonces')).toBe(false);
+    expect(isStakingSelfCall('freezeBalanceV2')).toBe(true);
+  });
+
+  it('flag validation: booleans only, no legacy + new mix, nothing for the consumer policy', () => {
+    for (const bad of [
+      { ...enterprise, allowStaking: 'yes' as never },
+      { ...enterprise, allowNonceInvalidation: 1 as never },
+      { ...enterprise, allowSelfCalls: true, allowStaking: false },
+      { ...enterprise, allowSelfCalls: false, allowNonceInvalidation: true },
+      { ...consumer, allowStaking: true },
+      { ...consumer, allowNonceInvalidation: true },
+    ]) {
+      expect(() => decodeOpForDisplay(op([]), bad)).toThrow();
+    }
+  });
+
+  it('UNKNOWN_CONTRACT flags calldata to a contract that is not a listed token', () => {
+    const unknown: Call = {
+      to: OTHER,
+      value: 0n,
+      data: Uint8Array.of(1, 2, 3, 4),
+      tokenId: 0n,
+      tokenValue: 0n,
+    };
+    const d = decodeOpForDisplay(op([unknown]), {
+      ...enterprise,
+      allowUnknown: true,
+    });
+    expect(d.warnings).toContainEqual({ code: 'UNKNOWN_CONTRACT', index: 0 });
+    // A listed token address with an unrecognised selector is still unknown,
+    // but not an unknown CONTRACT.
+    const listed = decodeOpForDisplay(op([{ ...unknown, to: USDT }]), {
+      ...enterprise,
+      allowUnknown: true,
+    });
+    expect(listed.warnings.map((w) => w.code)).not.toContain(
+      'UNKNOWN_CONTRACT',
     );
   });
 });
@@ -447,6 +549,8 @@ describe('property: the display is lossless for every recognised kind (2,000 ran
       ...enterprise,
       allowApprove: true,
       allowUnknown: true,
+      allowNonceInvalidation: true,
+      allowStaking: true,
       now: 0n,
       maxDeadlineSeconds: 1n << 256n,
       feeCollector: null,

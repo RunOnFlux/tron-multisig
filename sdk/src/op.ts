@@ -24,6 +24,14 @@ function uint160(address: TronAddress): bigint {
 }
 
 /**
+ * Whether `to` is address(0) or a TVM system / precompile address
+ * (1..`PRECOMPILE_BOUND`). None of them holds code a vault call could reach.
+ */
+export function isSystemAddress(to: TronAddress): boolean {
+  return uint160(to) <= PRECOMPILE_BOUND;
+}
+
+/**
  * Mirrors `SSPVault._isHaltingTransfer` (minus the vault-self case, which
  * needs the vault — see `validateOpForVault`): a TRX / TRC-10 amount above
  * int64 or a transfer to a precompile makes java-tron THROW instead of fail
@@ -55,7 +63,10 @@ export interface Call {
   readonly tokenValue: bigint;
 }
 
-/** Network fee paid by the vault after the calls, in the same transaction. */
+/**
+ * Network fee paid by the vault in the same transaction, BEFORE the calls
+ * (an Op whose fee cannot be paid reverts before any call runs).
+ */
 export interface Fee {
   /** `TRX_FEE_TOKEN` (`address(0)`) = TRX; otherwise a TRC-20 contract. */
   readonly token: TronAddress;
@@ -94,7 +105,15 @@ function checkAddress(v: unknown, what: string): void {
  * Validate one call against the vault's rules (the same checks the contract
  * enforces, so an invalid call can never be signed):
  * - `tokenValue > 0` ⇒ `tokenId ≠ 0`, `data` empty and `value = 0`;
- * - `tokenValue = 0` ⇒ `tokenId = 0`.
+ * - `tokenValue = 0` ⇒ `tokenId = 0`;
+ * - no TRX / TRC-10 above int64 or to a system address (the vault reverts
+ *   `BadCall`; java-tron would halt);
+ * - no calldata to address(0) or a system address: they hold no code, and the
+ *   vault reverts `BadCall` for any call with calldata to a code-less target
+ *   (a TVM CALL to such an account would otherwise "succeed" doing nothing).
+ * And one rule stricter than the vault (it would execute it):
+ * - no TRX / TRC-10 transfer to address(0), TRON's burn address — a missing
+ *   recipient must never silently become a burn.
  */
 export function validateCall(c: Call, index = 0): void {
   const at = `calls[${index}]`;
@@ -121,6 +140,14 @@ export function validateCall(c: Call, index = 0): void {
   }
   if (c.value > 0n && isHaltingRecipient(c.to, c.value)) {
     throw invalidOp(`${at}: TRX amount above int64 or to a system address`);
+  }
+  if ((c.value > 0n || c.tokenValue > 0n) && c.to === ZERO_ADDRESS) {
+    throw invalidOp(`${at}: TRX / TRC-10 transfer to address(0) (a burn)`);
+  }
+  if (c.data.length > 0 && isSystemAddress(c.to)) {
+    throw invalidOp(
+      `${at}: calldata to address(0) or a system address (no code: the vault reverts BadCall)`,
+    );
   }
 }
 
@@ -185,7 +212,7 @@ export function validateOpForVault(op: Op, vault: TronAddress): void {
 export type IntegerInput = bigint | number | string;
 
 export interface CallInput {
-  /** base58, `41…` hex or `0x…` 20-byte hex. */
+  /** base58, `41…` hex or `0x…` 20-byte hex. Required: never defaulted. */
   readonly to: string;
   readonly value?: IntegerInput;
   /** bytes or hex (optional `0x`). */
@@ -194,6 +221,11 @@ export interface CallInput {
   readonly tokenValue?: IntegerInput;
 }
 
+/**
+ * `token` and `recipient` may only be omitted for a zero fee: a non-zero fee
+ * must name both (a missing token never silently becomes TRX, a missing
+ * recipient never address(0)).
+ */
 export interface FeeInput {
   readonly token?: string;
   readonly amount?: IntegerInput;
@@ -222,6 +254,11 @@ function toBig(v: IntegerInput | undefined, what: string): bigint {
 
 function toAddr(v: string | undefined, what: string): TronAddress {
   if (v === undefined) return ZERO_ADDRESS;
+  return toRequiredAddr(v, what);
+}
+
+function toRequiredAddr(v: unknown, what: string): TronAddress {
+  if (typeof v !== 'string') throw invalidOp(`${what} is required`);
   try {
     return parseAddress(v);
   } catch {
@@ -248,23 +285,37 @@ export function normalizeOp(input: OpInput): Op {
   if (typeof input !== 'object' || input === null)
     throw invalidOp('op must be an object');
   if (!isArray(input.calls)) throw invalidOp('op.calls must be an array');
-  const calls = input.calls.map((c, i) =>
-    Object.freeze({
-      to: toAddr(c.to, `calls[${i}].to`),
+  const calls = input.calls.map((c, i) => {
+    if (typeof c !== 'object' || c === null) {
+      throw invalidOp(`calls[${i}] must be an object`);
+    }
+    return Object.freeze({
+      // Required: a missing `to` must never become address(0) (a burn).
+      to: toRequiredAddr(c.to, `calls[${i}].to`),
       value: toBig(c.value, `calls[${i}].value`),
       data: toData(c.data, `calls[${i}].data`),
       tokenId: toBig(c.tokenId, `calls[${i}].tokenId`),
       tokenValue: toBig(c.tokenValue, `calls[${i}].tokenValue`),
-    }),
-  );
+    });
+  });
   const fee = input.fee ?? {};
+  if (typeof fee !== 'object' || fee === null) {
+    throw invalidOp('op.fee must be an object');
+  }
+  const feeAmount = toBig(fee.amount, 'fee.amount');
+  if (
+    feeAmount > 0n &&
+    (fee.token === undefined || fee.recipient === undefined)
+  ) {
+    throw invalidOp('a non-zero fee must name its token and recipient');
+  }
   const op: Op = Object.freeze({
     calls: Object.freeze(calls),
     nonce: toBig(input.nonce, 'nonce'),
     deadline: toBig(input.deadline, 'deadline'),
     fee: Object.freeze({
       token: toAddr(fee.token, 'fee.token'),
-      amount: toBig(fee.amount, 'fee.amount'),
+      amount: feeAmount,
       recipient: toAddr(fee.recipient, 'fee.recipient'),
     }),
   });

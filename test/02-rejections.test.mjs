@@ -446,15 +446,17 @@ describe('calls', () => {
     );
   });
 
-  it('SURPRISE (documented): a call with calldata to an address WITHOUT code succeeds silently', async () => {
+  it('TRX-4: a call with calldata to an address WITHOUT code is refused (BadCall), not a silent no-op', async () => {
+    // EVM/TVM semantics would make this CALL succeed and move nothing while the Op burns its nonce and pays
+    // its fee; the vault now checks the target has code whenever the call carries calldata.
     const eoa = randomKey().addr;
     const nonce = nextNonce(v);
     const r = await exec(
       v,
       V.makeOp({ nonce, calls: [V.trc20Call(eoa, rcpt.addr, 1_000_000n)] }),
     );
-    expectOk(r); // EVM semantics: CALL to a codeless account succeeds; nothing is transferred
-    expect(await isNonceUsed(v, nonce)).toBe(true);
+    expectRevert(r, 'BadCall', [0n]);
+    expect(await isNonceUsed(v, nonce)).toBe(false);
   });
 });
 

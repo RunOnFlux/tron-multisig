@@ -225,7 +225,7 @@ describe('value transfers the TVM would halt on are rejected up front (no fee_li
     expectRevert(r, 'BadCall', [0n]);
   });
 
-  it('the guards do not over-reject: TRC-10 send, a zero-value self-call, TRX to an unactivated account, TRX to address(0) (burn), data-only call to a precompile, int64-max bounds', async () => {
+  it('the guards do not over-reject: TRC-10 send, a zero-value self-call, TRX to an unactivated account, TRX to address(0) (burn), int64-max bounds', async () => {
     const fresh = randomKey('audit-unactivated');
     const black = V.ZERO;
     const blackB58 = toBase58(V.ZERO); // T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb, TRON's burn address
@@ -241,7 +241,6 @@ describe('value transfers the TVM would halt on are rejected up front (no fee_li
           V.selfCall(v.addr, 'invalidateNonces', [1n << 100n, 1n]),
           V.trxCall(fresh.addr, 1n),
           V.trxCall(black, 1n),
-          V.call({ to: PRECOMPILE_SHA256, data: '0x1234' }),
         ],
         fee: { token: C.MockUSDT.addr, amount: 1n, recipient: FEE.addr },
       }),
@@ -257,6 +256,93 @@ describe('value transfers the TVM would halt on are rejected up front (no fee_li
       V.makeOp({ nonce: n(), calls: [V.trxCall(rcpt.addr, I64_MAX)] }),
     );
     expectSimRevert(big, 'CallFailed', [0n, '0x']);
+  });
+});
+
+describe('TRX-4 (2026-10 review): calldata must reach code', () => {
+  it('a call WITH calldata to a code-less target reverts BadCall(index) — EOA, unactivated account, address(0), precompiles — nonce unused', async () => {
+    const eoa = randomKey('audit-trx4-eoa');
+    await fundTrx(eoa.base58, 1n * TRX); // activated, no code
+    const fresh = randomKey('audit-trx4-fresh'); // never activated
+    const transfer = (to) =>
+      V.call({
+        to,
+        data: V.testIface.encodeFunctionData('transfer', [rcpt.addr, 1n]),
+      });
+    const cases = [
+      {
+        label: 'TRC-20 transfer() on an activated EOA',
+        calls: [transfer(eoa.addr)],
+        args: [0n],
+      },
+      {
+        label: 'TRC-20 transfer() on an unactivated address',
+        calls: [V.trxCall(rcpt.addr, 1n), transfer(fresh.addr)],
+        args: [1n],
+      },
+      {
+        label: 'TRC-20 transfer() on address(0)',
+        calls: [transfer(V.ZERO)],
+        args: [0n],
+      },
+      {
+        label: 'data-only call to precompile 0x02',
+        calls: [V.call({ to: PRECOMPILE_SHA256, data: '0x1234' })],
+        args: [0n],
+      },
+      {
+        label: 'data + TRX to an EOA',
+        calls: [V.call({ to: eoa.addr, value: 1n, data: '0x01' })],
+        args: [0n],
+      },
+    ];
+    const before = await N.trxBalance(v.base58);
+    for (const c of cases) {
+      const op = V.makeOp({ nonce: n(), calls: c.calls });
+      const r = await exec(v, op, { feeLimit: FEE_LIMIT });
+      expect(r.result, `${c.label}: ${describeResult(r)}`).toBe('REVERT');
+      expectRevert(r, 'BadCall', c.args);
+      expect(r.energy_usage_total, c.label).toBeLessThan(
+        CLEAN_REVERT_MAX_ENERGY,
+      );
+      expect(await isNonceUsed(v, op.nonce), c.label).toBe(false);
+    }
+    expect(await N.trxBalance(v.base58)).toBe(before);
+  });
+
+  it('plain TRX / TRC-10 to EOAs (empty calldata) and calldata to real contracts still execute', async () => {
+    const eoa = randomKey('audit-trx4-ok');
+    const r = await exec(
+      v,
+      V.makeOp({
+        nonce: n(),
+        calls: [
+          V.trxCall(eoa.addr, 1n),
+          V.trc10Call(eoa.addr, TRC10_ID, 1n),
+          V.trc20Call(C.MockUSDT.addr, eoa.addr, 1n),
+          V.selfCall(v.addr, 'invalidateNonces', [1n << 101n, 1n]),
+        ],
+      }),
+      { feeLimit: FEE_LIMIT },
+    );
+    expectOk(r);
+    expect(await N.trxBalance(eoa.base58)).toBe(1n);
+    expect(await N.trc10Balance(eoa.base58, TRC10_ID)).toBe(1n);
+    expect(await trc20Balance('MockUSDT', eoa.addr)).toBe(1n);
+  });
+
+  it('sponsored: a calldata call to a code-less target is an ordinary revert billed to S', async () => {
+    const r = await exec(
+      v,
+      V.makeOp({
+        nonce: n(),
+        calls: [V.trc20Call(randomKey('audit-trx4-sp').addr, rcpt.addr, 1n)],
+      }),
+      { via: 'sponsor' },
+    );
+    expectRevert(r, 'BadCall', [0n]);
+    expect(r.energy_fee).toBe(0);
+    expect(r.energy_usage_total).toBeLessThan(CLEAN_REVERT_MAX_ENERGY);
   });
 });
 

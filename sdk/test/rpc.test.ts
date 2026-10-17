@@ -18,6 +18,17 @@ interface Req {
   body: any;
 }
 
+/** A fixed wall clock (unix ms) and a node head this many ms behind it. */
+const NOW_MS = 1_790_000_000_000;
+function headBlock(lagMs = 3_000, number = 70_000_000): unknown {
+  return {
+    blockID: number.toString(16).padStart(16, '0') + 'ab'.repeat(24),
+    block_header: {
+      raw_data: { number, timestamp: NOW_MS - lagMs },
+    },
+  };
+}
+
 function mock(
   handler: (path: string, body: any) => unknown,
   status = 200,
@@ -358,15 +369,139 @@ describe('TronHttpClient', () => {
     expect(meta!.originEnergyLimit).toBe(0n);
     expect(meta!.bytecode.length).toBe(0);
     expect(await c.hasCode(A)).toBe(true);
+    const fresh = { now: () => NOW_MS };
     expect(
-      await new TronHttpClient('http://n', mock(() => ({})).fetch).hasCode(A),
+      await new TronHttpClient(
+        'http://n',
+        mock((path) => (path === '/wallet/getnowblock' ? headBlock() : {}))
+          .fetch,
+        fresh,
+      ).hasCode(A),
     ).toBe(false);
     expect(
       await new TronHttpClient(
         'http://n',
-        mock(() => ({ runtimecode: '' })).fetch,
+        mock((path) =>
+          path === '/wallet/getnowblock'
+            ? headBlock()
+            : path === '/wallet/getaccount'
+              ? {}
+              : { runtimecode: '' },
+        ).fetch,
+        fresh,
       ).hasCode(A),
     ).toBe(false);
+  });
+
+  it('TRX-5: getCodeState never reads an empty getcontractinfo as "no code" for a Contract account', async () => {
+    const client = (contractInfo: unknown, account: unknown) =>
+      new TronHttpClient(
+        'http://n',
+        mock((path) =>
+          path === '/wallet/getcontractinfo'
+            ? contractInfo
+            : path === '/wallet/getaccount'
+              ? account
+              : path === '/wallet/getnowblock'
+                ? headBlock()
+                : {},
+        ).fetch,
+        { now: () => NOW_MS },
+      );
+    // runtime code present: code (no account read needed)
+    expect(
+      await client({ runtimecode: '6080' }, { type: 'Normal' }).getCodeState(A),
+    ).toBe('code');
+    // node answered {} but the account is a contract: unknown, never "none"
+    const lagging = client({}, { balance: 0, type: 'Contract' });
+    expect(await lagging.getCodeState(A)).toBe('unknown');
+    expect(await lagging.hasCode(A)).toBe(true);
+    // {} and an EOA / unactivated account: none
+    expect(await client({}, { balance: 5 }).getCodeState(A)).toBe('none');
+    expect(
+      await client({}, { balance: 5, type: 'Normal' }).getCodeState(A),
+    ).toBe('none');
+    expect(await client({}, {}).getCodeState(A)).toBe('none');
+    expect(await client({ runtimecode: '' }, {}).hasCode(A)).toBe(false);
+  });
+
+  it('review D-10: a lagging node\'s {} + {} is "unknown", never "none"', async () => {
+    const node = (lagMs: number, account: unknown = {}) =>
+      mock((path) =>
+        path === '/wallet/getnowblock'
+          ? headBlock(lagMs)
+          : path === '/wallet/getaccount'
+            ? account
+            : {},
+      );
+    const client = (
+      lagMs: number,
+      account: unknown = {},
+      opts: { maxHeadLagMs?: number } = {},
+    ) => {
+      const m = node(lagMs, account);
+      return {
+        c: new TronHttpClient('http://n', m.fetch, {
+          now: () => NOW_MS,
+          ...opts,
+        }),
+        calls: m.calls,
+      };
+    };
+    // fresh head (≤ 2 min behind): an absent account is positive evidence
+    expect(await client(3_000).c.getCodeState(A)).toBe('none');
+    expect(await client(120_000).c.getCodeState(A)).toBe('none');
+    // a head AHEAD of our clock is our clock running late: still fresh
+    expect(await client(-30_000).c.getCodeState(A)).toBe('none');
+    // a lagging or still-syncing node: {} + {} proves nothing
+    const lagging = client(120_001);
+    expect(await lagging.c.getCodeState(A)).toBe('unknown');
+    expect(await lagging.c.hasCode(A)).toBe(true);
+    // ...and the account read is skipped (its answer would prove nothing)
+    expect(lagging.calls.map((r) => r.url)).not.toContain(
+      'http://n/wallet/getaccount',
+    );
+    // a stale node's "Normal account" (e.g. a CREATE2 address that held TRX
+    // before its contract was deployed) proves nothing either
+    expect(
+      await client(3_600_000, { balance: 5, type: 'Normal' }).c.getCodeState(A),
+    ).toBe('unknown');
+    // the head is read BEFORE the account (state only moves forward)
+    const fresh = client(0);
+    await fresh.c.getCodeState(A);
+    expect(fresh.calls.map((r) => r.url)).toEqual([
+      'http://n/wallet/getcontractinfo',
+      'http://n/wallet/getnowblock',
+      'http://n/wallet/getaccount',
+    ]);
+    // code present: neither the head nor the account is read
+    const coded = mock((path) =>
+      path === '/wallet/getcontractinfo' ? { runtimecode: '6080' } : {},
+    );
+    expect(
+      await new TronHttpClient('http://n', coded.fetch).getCodeState(A),
+    ).toBe('code');
+    expect(coded.calls).toHaveLength(1);
+    // the threshold is configurable
+    expect(
+      await client(10_000, {}, { maxHeadLagMs: 5_000 }).c.getCodeState(A),
+    ).toBe('unknown');
+    // a node that cannot report its head fails closed (throws)
+    await expect(
+      new TronHttpClient('http://n', mock(() => ({})).fetch, {
+        now: () => NOW_MS,
+      }).getCodeState(A),
+    ).rejects.toThrow();
+    // bad options are refused
+    expect(
+      () => new TronHttpClient('http://n', node(0).fetch, { maxHeadLagMs: 0 }),
+    ).toThrow();
+    expect(
+      () =>
+        new TronHttpClient('http://n', node(0).fetch, {
+          maxHeadLagMs: 1.5,
+        }),
+    ).toThrow();
   });
 
   it('trc20BalanceOf and nonceBitmap decode uint256 results', async () => {

@@ -464,11 +464,15 @@ function checkPacked(b: Uint8Array, unit: number, what: string): void {
 }
 
 /**
- * Calldata for `SSPVault.execute` / `SSPSponsor.execute` (same selector).
+ * Calldata for `SSPVault.execute(bytes,uint8,Op,bytes)` (self-submitted / escape
+ * hatch). `SSPSponsor.execute` takes an extra `uint256 energyCap` and so has a
+ * DIFFERENT selector: use `encodeSponsorExecute` for the sponsor.
  * The op is validated with `validateOp` first (the TRC-10 call rules, ≤ 16
- * calls, uint256 ranges), so the SDK never encodes an op the vault rejects
- * with `BadCall` or `TooManyCalls`. Signer/signature lengths are checked for
- * shape only; `assembleSignatures` does the cryptographic checks.
+ * calls, uint256 ranges, no calldata to a system address), so the SDK never
+ * encodes an op the vault rejects up front with `BadCall` or `TooManyCalls`
+ * — except a call with calldata to a code-less account, which needs a chain
+ * read (`TronHttpClient.getCodeState`). Signer/signature lengths are checked
+ * for shape only; `assembleSignatures` does the cryptographic checks.
  */
 export function encodeExecute(args: ExecuteArgs): Uint8Array {
   validateOp(args.op);

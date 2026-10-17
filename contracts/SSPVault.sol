@@ -26,7 +26,9 @@ import {ISSPVault, Op, Call, Fee} from "./interfaces/ISSPVault.sol";
 ///        INVALID makes the whole transaction OUT_OF_ENERGY. Sponsors must only sponsor known targets;
 ///      - CALL / CALLTOKEN THROW instead of failing for a TRX / TRC-10 transfer to the vault itself, to an
 ///        account-less precompile, or above int64. An exceptional halt behind the proxy burns the whole
-///        energy limit, so such transfers are refused up front (BadCall / FeeFailed).
+///        energy limit, so such transfers are refused up front (BadCall / FeeFailed);
+///      - a CALL to an address without code SUCCEEDS whatever the calldata: a call that carries calldata to
+///        a code-less target is refused (BadCall) instead of silently doing nothing.
 contract SSPVault is ISSPVault, TIP712, ReentrancyGuardTransient {
     string public constant VERSION = "1";
 
@@ -398,6 +400,11 @@ contract SSPVault is ISSPVault, TIP712, ReentrancyGuardTransient {
         }
         if (c.tokenId != 0) revert BadCall(index);
         if (c.value != 0 && _isHaltingTransfer(c.to, c.value)) revert BadCall(index);
+        // A call WITH calldata must reach code. The TVM reports success for a CALL to an account without
+        // code (address(0), an EOA, a precompile, a token address from another network or a typo), so the
+        // Op would burn its nonce and pay its fee while doing nothing. Plain TRX transfers (empty calldata)
+        // to EOAs stay allowed. Under the clone's DELEGATECALL `c.to.code` is the target's own code.
+        if (c.data.length != 0 && c.to.code.length == 0) revert BadCall(index);
         (bool ok, bytes memory reason) = c.to.call{value: c.value}(c.data);
         if (!ok) revert CallFailed(index, reason);
     }
