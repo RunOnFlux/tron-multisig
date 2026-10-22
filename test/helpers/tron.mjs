@@ -46,6 +46,10 @@ const isCpuTimeout = (msg) =>
 export const HOST = process.env.TRON_HOST || 'http://127.0.0.1:8090';
 export const JSONRPC =
   process.env.TRON_JSONRPC || 'http://127.0.0.1:8545/jsonrpc';
+// Optional TronGrid API key (scripts/deploy.mjs against TronGrid); the local suite never sets it.
+const API_HEADERS = process.env.TRON_PRO_API_KEY
+  ? { 'TRON-PRO-API-KEY': process.env.TRON_PRO_API_KEY }
+  : {};
 export const TRX = 1_000_000n;
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const strip0x = (h) => (h ?? '').replace(/^0x/i, '');
@@ -60,7 +64,7 @@ const hexToUtf8 = (h) => {
 export async function api(path, body = {}) {
   const res = await fetch(HOST + path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...API_HEADERS },
     body: JSON.stringify(body),
   });
   const text = await res.text();
@@ -89,7 +93,10 @@ const twCache = new Map();
 export function tw(key) {
   const k = typeof key === 'string' ? keyFor(key) : key;
   if (!twCache.has(k.priv))
-    twCache.set(k.priv, new TronWeb({ fullHost: HOST, privateKey: k.priv }));
+    twCache.set(
+      k.priv,
+      new TronWeb({ fullHost: HOST, privateKey: k.priv, headers: API_HEADERS }),
+    );
   return twCache.get(k.priv);
 }
 

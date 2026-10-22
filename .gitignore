@@ -8,3 +8,8 @@ node/data/
 *.log
 .DS_Store
 dist-tarballs/
+
+# deployment tooling: test-network keys and the local chain record are never committed
+deploy/keys/
+deployments/local.json
+deployments/*.tmp

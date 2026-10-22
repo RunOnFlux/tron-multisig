@@ -42,6 +42,7 @@ const SETTINGS = {
         'abi',
         'evm.bytecode.object',
         'evm.deployedBytecode.object',
+        'evm.deployedBytecode.immutableReferences',
         'metadata',
       ],
     },
@@ -103,6 +104,9 @@ for (const [file, contracts] of Object.entries(out.contracts)) {
       abi: c.abi,
       bytecode: c.evm.bytecode.object,
       deployedBytecode: c.evm.deployedBytecode.object,
+      // Byte ranges of `immutable` values in the runtime code (filled in by the constructor);
+      // scripts/deploy.mjs masks them when comparing on-chain runtime code with this build.
+      immutableReferences: c.evm.deployedBytecode.immutableReferences ?? {},
       deployedBytecodeSha256: crypto
         .createHash('sha256')
         .update(Buffer.from(c.evm.deployedBytecode.object, 'hex'))
