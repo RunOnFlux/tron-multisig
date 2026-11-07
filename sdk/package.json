@@ -1,6 +1,6 @@
 {
   "name": "@runonflux/tron-multisig",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Pure-TypeScript SDK for SSP TRON multisig vaults: addresses, vault config and CREATE2 prediction, TIP-712 Op digests, signing, strict Op display decoding, canonical TRON protobuf transactions, a thin HTTP client and an escape-hatch CLI. Three dependencies.",
   "license": "MIT",
   "author": "RunOnFlux",
